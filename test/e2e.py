@@ -166,6 +166,12 @@ try:
         sc = [pg.evaluate('[players[0].score, players[1].score]') for pg in (m, a, z)]
         check('skor kedua pemain sama di master, P1, P2', sc[0] == sc[1] == sc[2] and sum(sc[0]) >= 10, sc)
 
+        # 4b) koin/gem MELAYANG (butuh lompat) bisa diambil: master harus melihat lompatan pemain
+        ai = m.evaluate("Level.collectibles.findIndex(c=>c.air&&c.active)"); ac = m.evaluate("(i)=>{const c=Level.collectibles[i];return [c.x,c.support]}", ai)
+        a.evaluate("([x,s])=>{const q=players[0];q.x=x-q.w/2;q.y=s-q.h;q.vx=0;q.vy=0;q.onGround=true;q.climbing=false;q.invuln=3}", ac)
+        time.sleep(0.6); a.keyboard.press('Space', delay=250); time.sleep(1.2)
+        check('koin/gem melayang bisa diambil dengan lompat (master melihat lompatan)', not m.evaluate("(i)=>Level.collectibles[i].active", ai) and not z.evaluate("(i)=>Level.collectibles[i].active", ai))
+
         # 5) gerbang soal: panel instan, soal dari master, jawaban dinilai master
         for _ in range(4):                            # arena bisa sedang miring (pemain meluncur) → ulangi bila belum terbuka
             a.evaluate(AT_GATE0); time.sleep(0.12)

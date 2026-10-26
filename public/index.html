@@ -2086,7 +2086,7 @@ const Collectibles = (() => {
       }
       let best = null, bestD = Infinity;
       for (const p of ACT) {
-        if (!touches(c, p)) continue;
+        if (!touches(c, p) && !(Online.master && p.ym < p.y && touches(c, { x: p.x, y: p.ym, w: p.w, h: p.h }))) continue;
         const dx = c.x - (p.x + p.w / 2), dy = c.y - (p.y + p.h / 2), d = dx * dx + dy * dy;
         if (d < bestD || (d === bestD && best && p.score < best.score)) { best = p; bestD = d; }
       }
@@ -2764,7 +2764,7 @@ const Online = (() => {
      - Interaksi yang melibatkan dunia (kena tong/api, ambil koin/palu, lompati tong, gerbang soal, skor) diputuskan master dari posisi pemain,
        lalu dikembalikan ke pemain lewat pesan andal (hit, pn, ev, ps) + ringkasan status 10×/dtk. Master tidak ikut bermain: ia penonton + wasit. */
   const O = { on: false, master: false, me: -1, gen: 0, ready: false, net: null, nets: [null, null], rdy: [false, false], name: '', cur: -1,
-    held: new Set(), seq: 0, accP: 0, accS: 0, accT: 0, snapN: 0, openSeq: 0, sn: null, evq: [], pnKey: ['', ''], tm: [[0, 0, 0, 0, 0], [0, 0, 0, 0, 0]], code: '', token: '' };
+    held: new Set(), seq: 0, accP: 0, accS: 0, accT: 0, snapN: 0, openSeq: 0, ymin: 9999, sn: null, evq: [], pnKey: ['', ''], tm: [[0, 0, 0, 0, 0], [0, 0, 0, 0, 0]], code: '', token: '' };
   const PKT_HZ = 40, SNAP_HZ = 30, ST_HZ = 10;
   const newRem = () => ({ has: false, n: 0, x: 0, y: 0, vx: 0, vy: 0, g: 0, c: 0, f: 1, cp: 0, s: 0, at: 0 });
   O.mr = [newRem(), newRem()];   // master: posisi terakhir yang dilaporkan P1 & P2
@@ -2801,8 +2801,8 @@ const Online = (() => {
   /* ================= PEMAIN → MASTER: posisi karakter sendiri (tak andal, 40×/dtk) ================= */
   O.pkt = () => {
     const p = players[O.me];
-    return { t: 'p', i: O.me, g: O.gen, n: ++O.seq, x: R1(p.x), y: R1(p.y), vx: Math.round(p.vx + (p.climbing || p.panel ? 0 : Tilt.slide() * (p.hammer > 0 ? 0.5 : 1))), vy: Math.round(p.vy), g: p.onGround ? 1 : 0,
-      c: p.climbing && p.ladder ? Level.ladders.indexOf(p.ladder) + 1 : 0, f: p.facing < 0 ? -1 : 1, cp: Math.round(p.climbPhase), s: p.panel ? 4 : 0 };
+    return { t: 'p', i: O.me, gn: O.gen, n: ++O.seq, x: R1(p.x), y: R1(p.y), vx: Math.round(p.vx + (p.climbing || p.panel ? 0 : Tilt.slide() * (p.hammer > 0 ? 0.5 : 1))), vy: Math.round(p.vy), g: p.onGround ? 1 : 0,
+      c: p.climbing && p.ladder ? Level.ladders.indexOf(p.ladder) + 1 : 0, f: p.facing < 0 ? -1 : 1, cp: Math.round(p.climbPhase), s: p.panel ? 4 : 0, ym: R1(Math.min(O.ymin, p.y)) };
   };
   O.recvPkt = (m, r, p) => {                                  // r = keadaan terlapor, p = pemain; true bila diterima
     if (typeof m.n !== 'number' || m.n <= r.n || !isFinite(m.x) || !isFinite(m.y)) return false;     // basi / tak berurutan / tak valid
@@ -2810,6 +2810,7 @@ const Online = (() => {
     r.n = m.n; r.at = performance.now();
     r.x = clampN(m.x, 0, CONFIG.W - p.w); r.y = clampN(m.y, -40, CONFIG.H + 80);
     r.vx = clampN(m.vx, -900, 900); r.vy = clampN(m.vy, -1500, 1500);
+    r.ym = clampN(m.ym === undefined ? m.y : m.ym, -40, CONFIG.H + 80);
     r.g = m.g ? 1 : 0; r.c = c > 0 && c <= Level.ladders.length ? c : 0; r.f = m.f < 0 ? -1 : 1; r.cp = clampN(m.cp, 0, 1e6); r.s = m.s | 0;
     if (!r.has) { r.has = true; p.x = r.x; p.y = r.y; }
     return true;
@@ -2824,6 +2825,7 @@ const Online = (() => {
     p.climbing = !!r.c; p.ladder = r.c ? Level.ladders[r.c - 1] : null;
     if (r.g) p.chain = 0;                                                  // rantai lompati-tong berakhir saat mendarat (dijalankan master untuk pemain jarak jauh)
     p.ghostAns = !!(r.s & 4);
+    p.ym = Math.min(r.y, r.ym === undefined ? r.y : r.ym);                 // titik tertinggi lompatan sejak paket sebelumnya: koin/gem melayang tak terlewat di antara dua paket
     const dx = tx - p.x, dy = ty - p.y;
     if (dx * dx + dy * dy > 8100) { p.x = tx; p.y = ty; return; }          // terlalu jauh (respawn/teleport): langsung loncat
     const k = 1 - Math.exp(-dt * rate);
@@ -3074,12 +3076,12 @@ const Online = (() => {
   /* ================= PESAN MASUK ================= */
   function onMasterMsg(i, m) {                                 // Room Master menerima dari pemain i
     if (m.t === 'p') {
-      if (m.g === O.gen && O.recvPkt(m, O.mr[i], players[i])) O.to(1 - i, 'u', Object.assign({}, m, { i }));      // diteruskan ke pemain lain (bayangan)
+      if (m.gn === O.gen && O.recvPkt(m, O.mr[i], players[i])) O.to(1 - i, 'u', Object.assign({}, m, { i }));      // diteruskan ke pemain lain (bayangan)
     } else if (m.t === 'a') onAct(i, m);
     else if (m.t === 'again' && Game.getState() === 'result') Game.net.begin();
   }
   function onPlayerMsg(m) {                                    // Pemain menerima dari Room Master (atau posisi pemain lain via master)
-    if (m.t === 'p') { if (m.i !== O.me && m.g === O.gen) O.recvPkt(m, O.r0, players[O.me ? 0 : 1]); return; }
+    if (m.t === 'p') { if (m.i !== O.me && m.gn === O.gen) O.recvPkt(m, O.r0, players[O.me ? 0 : 1]); return; }
     if (m.t === 'go') return O.recvGo(m);
     if (m.t === 's') return O.recvSnap(m);
     if (m.t === 'st') return O.recvSt(m);
@@ -3108,8 +3110,9 @@ const Online = (() => {
       return;
     }
     if (O.ready && live()) {
+      O.ymin = Math.min(O.ymin, players[O.me].y);
       O.accP += dt;                                       // akumulator (bukan "now - last >= N"): laju kirim tidak terkuantisasi ke frame
-      if (O.accP >= 1 / PKT_HZ) { O.accP = Math.min(O.accP - 1 / PKT_HZ, 1 / PKT_HZ); O.net.send('u', O.pkt()); }
+      if (O.accP >= 1 / PKT_HZ) { O.accP = Math.min(O.accP - 1 / PKT_HZ, 1 / PKT_HZ); O.net.send('u', O.pkt()); O.ymin = players[O.me].y; }
     }
     if (O.on) O.follow(players[O.me ? 0 : 1], O.r0, dt, 30, 0);
     if (st === 'playing') O.worldFrame(dt);
@@ -4114,9 +4117,14 @@ const Game = (() => {
       textS(msg, CONFIG.W / 2, 109, 3, on ? '#6ef2ff' : '#ffffff', 'center');
     }
     if (state === 'countdown') {
-      const n = Math.ceil(countdown), f = countdown - Math.floor(countdown), s = 12 + Math.round(f * 4);
-      textS(String(n), CONFIG.W / 2 + 6, CONFIG.H / 2 + 6, s, '#7a2a00', 'center');
-      textS(String(n), CONFIG.W / 2, CONFIG.H / 2, s, '#ffd23f', 'center');
+      const n = Math.ceil(countdown), f = countdown - Math.floor(countdown), s = 22 + Math.round(f * 6), cx = CONFIG.W / 2, cy = CONFIG.H / 2;
+      ctx.fillStyle = 'rgba(8,8,24,0.62)'; ctx.fillRect(0, 0, CONFIG.W, CONFIG.H);               // redupkan arena agar angka terbaca jelas
+      ctx.fillStyle = '#0b0b1a'; ctx.fillRect(cx - 230, cy - 150, 460, 300);
+      ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = 4; ctx.strokeRect(cx - 228, cy - 148, 456, 296);
+      textS('PERTEMPURAN DIMULAI', cx, cy - 112, 3, '#ff8a3d', 'center');
+      textS(String(n), cx + 8, cy + 8, s, '#7a2a00', 'center');
+      textS(String(n), cx, cy, s, '#ffd23f', 'center');
+      textS('BERSIAP!', cx, cy + 118, 4, '#7dff7a', 'center');
     } else if (goT > 0 && state === 'playing') {
       textS('GO!', CONFIG.W / 2 + 5, CONFIG.H / 2 + 5, 14, '#14502a', 'center');
       textS('GO!', CONFIG.W / 2, CONFIG.H / 2, 14, '#7dff7a', 'center');
