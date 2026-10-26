@@ -29,6 +29,12 @@
   /* Tombol utilitas (jeda, suara, layar penuh) di tepi bawah arena */
   #util { display: none; position: absolute; left: 50%; bottom: 3px; transform: translateX(-50%); gap: 6px; z-index: 5; }
   body.touch #util { display: flex; }
+  /* Layar lebar (HP mendatar): tombol pindah ke bar hitam kanan (di luar arena 4:3), tersusun ke bawah, agar tidak menutupi game */
+  @media (min-aspect-ratio: 8/5) {
+    #util { left: auto; bottom: auto; top: 10px; transform: none; flex-direction: column; gap: 8px;
+      right: calc((100vw - 133.333vh) / 4 - 19px); }
+    #util .ub { height: 34px; }
+  }
   #util .ub {
     width: 38px; height: 30px; padding: 0; border: 2px solid #ffd23f; border-radius: 6px;
     background: rgba(11,11,26,.78); color: #ffd23f; font: bold 13px "Courier New", monospace; touch-action: none;
@@ -88,9 +94,8 @@
     left: max(14px, env(safe-area-inset-left)); right: max(14px, env(safe-area-inset-right));
     justify-content: space-between; gap: 0;
   }
-  body.online #pad .cluster[data-player="0"] .acts { flex-direction: row-reverse; align-items: flex-end; gap: 16px; padding-bottom: 6px; }
+  body.online #pad .cluster[data-player="0"] .acts { flex-direction: column-reverse; align-items: flex-end; gap: 12px; padding-bottom: 6px; }
   body.online #pad .tb { --bs: clamp(60px, 20vh, 88px); font-size: 13px; opacity: .75; }
-  body.online #pad .tb.b-a { margin-bottom: 30px; }
   body.online #pad .joy { --s: clamp(96px, 30vh, 144px); }
   body.online.guest #pad .cluster[data-player="0"] { --c: #4da6ff; }
   #lobby { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: rgba(8,8,24,.86); }
@@ -117,7 +122,7 @@
 </head>
 <body>
 <div id="stage">
-  <canvas id="game" width="1600" height="740" tabindex="0"></canvas>
+  <canvas id="game" width="1600" height="1200" tabindex="0"></canvas>
   <div id="util">
     <button class="ub" data-act="pause" aria-label="Jeda">II</button>
     <button class="ub" data-act="mute" aria-label="Suara">&#9835;</button>
@@ -177,7 +182,8 @@
 
 /* ---------------------------- CONFIG ---------------------------- */
 const CONFIG = {
-  W: 1600, H: 740, FLOOR: 700,  // arena panjang (~2,16:1, bukan 4:3): lantai + 6 tingkat platform
+  W: 1600, H: 740, TOP: 460, FLOOR: 700,   // TOP = strip khusus panel soal di atas arena (kanvas total 1600x1200 = rasio 4:3)
+   // arena panjang (~2,16:1, bukan 4:3): lantai + 6 tingkat platform
   STEP: 1 / 120,            // fixed timestep fisika (detik)
   MAX_FRAME: 0.1,           // batas dt per frame agar tidak spiral
   GRAVITY: 1700,
@@ -1863,7 +1869,7 @@ const Quiz = (() => {
 const REWARD_NAME = { boost: 'TURBO', shield: 'PERISAI', bonus: 'BONUS x2' };
 const Gates = (() => {
   const WRONG_COOLDOWN = 3, CANCEL_COOLDOWN = 1, FB_OK = 1.0, FB_BAD = 1.6;
-  const PW = 440, PH = 186;
+  const PW = 440, PH = 186;   // ukuran desain panel (digambar lalu diskalakan K)
 
   function reset() {
     for (const g of Level.gates) { g.open[0] = g.open[1] = false; g.cool[0] = g.cool[1] = 0; }
@@ -1970,15 +1976,17 @@ const Gates = (() => {
     }
   }
 
-  /* Tata letak panel: setengah layar milik pemain, di atas bila pemain di bawah, dan sebaliknya. */
+  /* Tata letak panel: STATIS. Merah (P1) di pojok kiri atas, biru (P2) di pojok kanan atas, tidak bergantung posisi pemain. */
+  const K = 1.65;                                  // panel diperbesar agar mudah dibaca & diketuk di HP
   function panelRect(p) {
-    const x = p.index === 0 ? 14 : CONFIG.W - 14 - PW;
-    const y = (p.y + p.h) > CONFIG.H / 2 ? 58 : CONFIG.H - 8 - PH;
-    return { x, y, w: PW, h: PH };
+    const w = PW * K, h = PH * K, m = 20;
+    const x = p.index === 0 ? m : CONFIG.W - m - w;
+    const y = Math.round((CONFIG.TOP - h) / 2);    // koordinat LAYAR (di dalam strip TOP), bukan koordinat arena
+    return { x, y, w, h };
   }
-  function optionRect(r, i) {
-    const col = i % 2, row = (i / 2) | 0, w = r.w / 2 - 21;
-    return { x: r.x + 14 + col * (w + 14), y: r.y + 74 + row * 44, w, h: 36 };
+  function optionRect(r, i) {                      // r bisa berukuran desain (k=1) atau layar (k=K)
+    const k = r.w / PW, col = i % 2, row = (i / 2) | 0, w = r.w / 2 - 21 * k;
+    return { x: r.x + 14 * k + col * (w + 14 * k), y: r.y + (74 + row * 44) * k, w, h: 36 * k };
   }
 
   return { reset, nearGate, tryOpen, answer, cancel, interrupt, handleInput, update, panelRect, optionRect, tierFor };
@@ -3162,16 +3170,17 @@ const Game = (() => {
   function onTap(e) {
     canvas.focus();
     const r = canvas.getBoundingClientRect();
-    const s = Math.min(r.width / CONFIG.W, r.height / CONFIG.H);
+    const s = Math.min(r.width / CONFIG.W, r.height / (CONFIG.H + CONFIG.TOP));
     const x = (e.clientX - r.left - (r.width - CONFIG.W * s) / 2) / s;
-    const y = (e.clientY - r.top - (r.height - CONFIG.H * s) / 2) / s;
+    const sy = (e.clientY - r.top - (r.height - (CONFIG.H + CONFIG.TOP) * s) / 2) / s;   // koordinat layar (termasuk strip soal)
+    const y = sy - ((state === 'menu' || state === 'controls') ? CONFIG.TOP / 2 : CONFIG.TOP);   // koordinat arena
     if (state === 'menu') {
       const i = Math.floor((y - UI_OFF - 215) / 36);
       if (i >= 0 && i < MENU_ITEMS.length && Math.abs(x - CONFIG.W / 2) < 300) { menuIndex = i; activateMenu(); }
     } else if (state === 'controls') {
       state = 'menu';
     } else if (state === 'playing') {
-      tapPanels(x, y);
+      tapPanels(x, sy);
     } else if (state === 'result') {
       tapResult(x - UI_OFFX, y - UI_OFF);
     } else if (state === 'paused') {
@@ -3464,8 +3473,10 @@ const Game = (() => {
   function drawPanel(p) {
     const pn = p.panel;
     if (!pn) return;
-    const r = Gates.panelRect(p);
+    const sr = Gates.panelRect(p), k = sr.w / 440;
+    const r = { x: 0, y: 0, w: 440, h: 186 };       // gambar dalam koordinat desain, lalu diskalakan
     ctx.save();
+    ctx.translate(sr.x, sr.y); ctx.scale(k, k);
     ctx.globalAlpha = 0.93;
     ctx.fillStyle = '#0b0b1a';
     ctx.fillRect(r.x, r.y, r.w, r.h);
@@ -3495,7 +3506,7 @@ const Game = (() => {
       text(pn.fb.title, r.x + r.w / 2, r.y + 102, 30, pn.fb.ok ? '#7dff7a' : '#ff6b6b', 'center');
       textFit(pn.fb.detail, r.x + r.w / 2, r.y + 138, r.w - 24, 18, '#fff', 'center');
     } else {
-      const hint = p.index === 0 ? 'WASD:PILIH E:OK SPACE:BATAL' : 'PANAH:PILIH ENTER:OK SHIFT:BATAL';
+      const hint = document.body.classList.contains('touch') ? 'KETUK JAWABAN  LOMPAT:BATAL' : p.index === 0 ? 'WASD:PILIH E:OK SPACE:BATAL' : 'PANAH:PILIH ENTER:OK SHIFT:BATAL';
       textS(hint, r.x + r.w / 2, r.y + r.h - 12, 2, '#9aa', 'center');
     }
     ctx.restore();
@@ -3863,7 +3874,7 @@ const Game = (() => {
     textS('P/ESC LANJUT  R ULANGI  M MENU', W / 2, 440, 2, '#9aa', 'center');
   }
 
-  function render() {
+  function renderWorld() {
     if (state === 'menu') { drawBackground(); ctx.save(); ctx.translate(UI_OFFX, UI_OFF); drawMenu(); ctx.restore(); return; }
     if (state === 'controls') { drawBackground(); ctx.save(); ctx.translate(UI_OFFX, UI_OFF); drawControls(); ctx.restore(); return; }
     const shk = FX.shakeOffset();
@@ -3914,7 +3925,6 @@ const Game = (() => {
       textS(msg, CONFIG.W / 2 + 2, 111, 3, '#2a2a4a', 'center');
       textS(msg, CONFIG.W / 2, 109, 3, on ? '#6ef2ff' : '#ffffff', 'center');
     }
-    if (state !== 'result') drawPanels();
     if (state === 'countdown') {
       const n = Math.ceil(countdown), f = countdown - Math.floor(countdown), s = 12 + Math.round(f * 4);
       textS(String(n), CONFIG.W / 2 + 6, CONFIG.H / 2 + 6, s, '#7a2a00', 'center');
@@ -3925,6 +3935,36 @@ const Game = (() => {
     }
     if (state === 'paused') { ctx.save(); ctx.translate(UI_OFFX, UI_OFF); drawPause(); ctx.restore(); }
     if (state === 'result') { ctx.save(); ctx.translate(UI_OFFX, UI_OFF); drawResult(); ctx.restore(); drawParticles(); }
+  }
+
+  /* Strip soal: di atas arena, tidak menutupi permainan. P1 (merah) kiri, P2 (biru) kanan. */
+  function drawPanelStrip() {
+    if (state === 'menu' || state === 'controls') return;
+    ctx.fillStyle = '#0b0b1a'; ctx.fillRect(0, 0, CONFIG.W, CONFIG.TOP);
+    ctx.fillStyle = '#ffd23f'; ctx.fillRect(0, CONFIG.TOP - 3, CONFIG.W, 3);
+    for (const p of players) {
+      const r = Gates.panelRect(p);
+      if (!p.panel) {
+        ctx.globalAlpha = 0.35; ctx.strokeStyle = p.color; ctx.lineWidth = 2;
+        ctx.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+        const mine = !Online.on || p.index === Online.me, touch = document.body.classList.contains('touch');
+        textS(p.name + (Online.on ? (mine ? ' SOAL SAYA' : ' SOAL LAWAN') : ' SOAL'), r.x + r.w / 2, r.y + r.h / 2 - 14, 5, p.color, 'center');
+        if (mine) textS(touch ? 'KETUK TOMBOL SOAL DI GERBANG' : (p.index === 0 ? 'TEKAN E DI GERBANG' : 'TEKAN ENTER DI GERBANG'), r.x + r.w / 2, r.y + r.h / 2 + 30, 3, '#9aa', 'center');
+        ctx.globalAlpha = 1;
+      }
+    }
+    if (state !== 'result') drawPanels();
+  }
+
+  function render() {
+    const full = state === 'menu' || state === 'controls';        // menu: dipusatkan di seluruh kanvas 4:3
+    ctx.fillStyle = full ? '#14142b' : '#0b0b1a'; ctx.fillRect(0, 0, CONFIG.W, CONFIG.H + CONFIG.TOP);
+    ctx.save();
+    ctx.translate(0, full ? CONFIG.TOP / 2 : CONFIG.TOP);                         // arena digeser ke bawah strip soal
+    ctx.beginPath(); ctx.rect(0, 0, CONFIG.W, CONFIG.H); ctx.clip();
+    renderWorld();
+    ctx.restore();
+    drawPanelStrip();
   }
 
   /* ----- Efek ambient (visual saja): percikan jejak turbo dan kilau perisai ----- */
