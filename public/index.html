@@ -991,6 +991,23 @@ function createPlayer(index) {
 
 const players = [createPlayer(0), createPlayer(1)];
 
+/* Pemain yang BERINTERAKSI dengan dunia lokal (tong, api, koin, palu, gerbang, garis akhir).
+   Lokal 1 perangkat: keduanya. Online: hanya pemain milik perangkat ini (lawan = bayangan tanpa tabrakan); Room Master: tidak ada. */
+let ACT = players;
+function setActors() { ACT = !Online.on ? players : Online.master ? [] : [players[Online.me]]; }
+
+/* RNG berbenih (mulberry32): online, host mengirim satu seed sehingga SEMUA perangkat memakai rangkaian acak yang sama
+   untuk dunia (tong tangga, api) dan soal matematika → gelombang & urutan soal identik, tanpa sinkronisasi jaringan. */
+const Rnd = (() => {
+  const mk = seed => { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
+  let world = Math.random;
+  return {
+    mk, rand: () => world(),
+    seed(n) { if (!n) { this.unseed(); return; } world = mk(n ^ 0x5bd1e995); Quiz.setRng(mk(n ^ 0x1b873593)); },
+    unseed() { world = Math.random; Quiz.setRng(null); }
+  };
+})();
+
 function resetPlayers() {
   for (const p of players) {
     const s = Level.spawns[p.index];
@@ -1292,7 +1309,7 @@ const Barrels = (() => {
 
   function spawnBlocked() {                          // jangan memunculkan tong tepat di atas pemain
     const sx = Level.barrelSpawn.x, feet = Level.barrelSpawn.y + CONFIG.BARREL_R;
-    for (const p of players) {
+    for (const p of ACT) {
       if (Math.abs(p.x + p.w / 2 - sx) < 30 && Math.abs(p.y + p.h - feet) < 20) return true;
     }
     return false;
@@ -1350,7 +1367,7 @@ const Barrels = (() => {
             if (b.kind === 'ladder') { if (b.descents < 2) { b.onLadder = L; b.x = L.cx; } }
             else if (b.rolled !== L) {
               b.rolled = L;
-              if (Math.random() < LADDER_CHANCE[settings.difficulty] && b.descents < 3) { b.onLadder = L; b.x = L.cx; }
+              if (Rnd.rand() < LADDER_CHANCE[settings.difficulty] && b.descents < 3) { b.onLadder = L; b.x = L.cx; }
             }
             break;
           }
@@ -1359,13 +1376,13 @@ const Barrels = (() => {
 
       if (b.x < -30 || b.x > CONFIG.W + 30 || b.y > CONFIG.H + 40) { b.active = false; continue; }
 
-      for (const p of players) {                     // palu menghancurkan tong di depan pemain
+      for (const p of ACT) {                         // palu menghancurkan tong di depan pemain
         if (Hammers.inZone(p, b.x, b.y, R)) {
           Hammers.smash(p, CONFIG.SMASH_BARREL, b.x, b.y); FX.event('barrelBreak', b.x, b.y); b.active = false; break;
         }
       }
       if (!b.active) continue;
-      for (const p of players) {                     // melompati tong = poin (rantai 100 / 300 / 800)
+      for (const p of ACT) {                         // melompati tong = poin (rantai 100 / 300 / 800)
         if (p.onGround || p.climbing || b.onLadder || !b.grounded || b.jmp[p.index]) continue;
         const cx = p.x + p.w / 2, feet = p.y + p.h, surf = b.y + R;
         if (Math.abs(b.x - cx) < 14 && feet < surf - 18 && feet > surf - 120) {
@@ -1375,7 +1392,7 @@ const Barrels = (() => {
           Score.award(p, pts, 'skill', cx, feet - 12);
         }
       }
-      for (const p of players) {
+      for (const p of ACT) {
         // Tong yang sedang menggelinding hanya mengenai pemain di tingkat yang sama (kepala yang menembus platform dari bawah tidak dihitung)
         if (!b.onLadder && b.grounded && p.y + p.h > b.y + R + 6) continue;
         if (p.invuln <= 0 && hitsPlayer(b, p)) {
@@ -1499,7 +1516,7 @@ const Flames = (() => {
   }
   function target(f) {                               // pemain terdekat
     let best = null, bd = Infinity;
-    for (const p of players) {
+    for (const p of ACT) {
       const dx = p.x + p.w / 2 - f.x, dy = p.y + p.h - f.y, d = dx * dx + dy * dy;
       if (d < bd) { bd = d; best = p; }
     }
@@ -1539,22 +1556,22 @@ const Flames = (() => {
         for (const s of Level.solids) if (s.y === f.y) { lo = s.x + 12; hi = s.x + s.w - 12; break; }
         f.x += f.dir * FLAME_SPEED[df] * dt;
         if (f.x <= lo) { f.x = lo; f.dir = 1; } else if (f.x >= hi) { f.x = hi; f.dir = -1; }
-        if (Math.random() < dt * 0.35) f.dir = (tp && Math.random() < 0.65) ? ((tp.x + tp.w / 2) >= f.x ? 1 : -1) : -f.dir;
+        if (Rnd.rand() < dt * 0.35) f.dir = (tp && Rnd.rand() < 0.65) ? ((tp.x + tp.w / 2) >= f.x ? 1 : -1) : -f.dir;
         if (f.cd <= 0 && tp) {                       // pilih memanjat bila pemain terdekat berada di tingkat lain
           for (const L of Level.ladders) {
             if (Math.abs(f.x - L.cx) > 3) continue;
             const up = f.y === L.bottom && tfeet < f.y - 40, down = f.y === L.top && tfeet > f.y + 40;
             if (!up && !down) continue;
-            if (Math.random() < 0.65) f.climb = { L, dir: up ? -1 : 1 }; else f.cd = 1.2;
+            if (Rnd.rand() < 0.65) f.climb = { L, dir: up ? -1 : 1 }; else f.cd = 1.2;
             break;
           }
         }
       }
-      for (const p of players) {
+      for (const p of ACT) {
         if (Hammers.inZone(p, f.x, f.y - 10, 10)) { Hammers.smash(p, CONFIG.SMASH_FLAME, f.x, f.y - 10); FX.event('flameOut', f.x, f.y - 10); f.active = false; break; }
       }
       if (!f.active) continue;
-      for (const p of players) {
+      for (const p of ACT) {
         if (!f.climb && p.y + p.h > f.y + 6) continue;   // api hanya mengenai pemain di tingkat yang sama
         if (p.invuln > 0 || !hits(f, p)) continue;
         if (p.shield > 0) { FX.event('shieldBlock', f.x, f.y - 10); FX.event('flameOut', f.x, f.y - 10); f.active = false; break; }
@@ -2061,7 +2078,7 @@ const Collectibles = (() => {
         continue;
       }
       let best = null, bestD = Infinity;
-      for (const p of players) {
+      for (const p of ACT) {
         if (!touches(c, p)) continue;
         const dx = c.x - (p.x + p.w / 2), dy = c.y - (p.y + p.h / 2), d = dx * dx + dy * dy;
         if (d < bestD || (d === bestD && best && p.score < best.score)) { best = p; bestD = d; }
@@ -2089,7 +2106,7 @@ const Hammers = (() => {
   function update(dt) {
     for (const h of Level.hammers) {
       if (!h.active) { h.respawn -= dt; if (h.respawn <= 0) { h.active = true; h.respawn = 0; } continue; }
-      for (const p of players) {
+      for (const p of ACT) {
         if (p.hammer > 0 || p.climbing || p.panel || p.hitTimer > 0) continue;
         const cx = p.x + p.w / 2, feet = p.y + p.h;
         if (Math.abs(cx - h.x) < 16 && Math.abs(feet - h.support) < 10) {
@@ -2127,7 +2144,7 @@ const Match = (() => {
   function evaluate(elapsed) {
     if (result) return result;
     const fin = [];
-    for (const p of players) if (!p.finished && atFinish(p)) fin.push(p);
+    for (const p of ACT) if (!p.finished && atFinish(p)) fin.push(p);
     if (fin.length) {
       const bonus = CONFIG.FINISH_BONUS + Math.floor(Math.max(0, duration() - elapsed)) * CONFIG.TIME_BONUS_PER_SEC;
       for (const p of fin) { p.finished = true; Score.award(p, bonus, 'finish', p.x + p.w / 2, p.y - 10); }
@@ -2436,7 +2453,7 @@ const Sprites = (() => {
   return S;
 })();
 
-/* ---------------------------- ONLINE (host = P1 menjalankan seluruh simulasi, tamu = P2 mengirim input) ---------------------------- */
+/* ---------------------------- ONLINE (tiap perangkat menjalankan dunianya sendiri dengan seed yang sama; lawan = bayangan) ---------------------------- */
 /* =====================================================================
    NetSession — koneksi antar-pemain.
    Utama : WebRTC DataChannel langsung antar-perangkat (tanpa server di tengah → latensi serendah mungkin).
@@ -2725,36 +2742,25 @@ class NetSession {
 
 const Online = (() => {
   const $ = id => document.getElementById(id);
-  const P2 = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'ShiftRight', 'Enter'];
   const HMAP = { ArrowLeft: 'KeyA', ArrowRight: 'KeyD', ArrowUp: 'KeyW', ArrowDown: 'KeyS', ShiftRight: 'Space', ShiftLeft: 'Space', Enter: 'KeyE' };
   const GMAP = { KeyA: 'ArrowLeft', KeyD: 'ArrowRight', KeyW: 'ArrowUp', KeyS: 'ArrowDown', Space: 'ShiftRight', KeyE: 'Enter', ShiftLeft: 'ShiftRight',
     ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ShiftRight: 'ShiftRight', Enter: 'Enter' };
-  const SKIP = { index: 1, w: 1, h: 1, color: 1, accent: 1, name: 1 };
-  const prim = o => {
-    const r = {};
-    for (const k in o) {
-      if (SKIP[k]) continue;
-      const v = o[k], ty = typeof v;
-      if (ty === 'number') r[k] = Math.round(v * 100) / 100; else if (ty === 'boolean' || ty === 'string' || v === null) r[k] = v;
-    }
-    return r;
-  };
-  /* ROOM MASTER = penonton ruangan (kursi ketiga, tidak ikut bermain). Ia tersambung HANYA ke host lewat NetSession kedua
-     (host: O.mnet). Host menyiarkan ke master: 'go'/'end'/'pq' (andal), snapshot dunia yang sama dengan tamu, posisi P1 (miliknya)
-     dan posisi P2 (diteruskan dari tamu), serta efek/suara P2 yang tamu mainkan sendiri (O.mevq). Master tidak mengirim input apa pun. */
-  const O = { on: false, host: false, guest: false, master: false, me: 0, ready: false, gen: 0, ended: false, net: null, name: '',
-    held: new Set(), remote: new Set(), evq: [], depth: 0, last: 0,
-    muteF: 0, seq: 0, selT: 0, accP: 0, accS: 0,
-    mnet: null, mReady: false, mFull: false, mevq: [] };
-  /* Model sinkronisasi (meniru Number Bomber): GERAK pemain dihitung di perangkat pemain itu sendiri → respons tombol instan,
-     tanpa menunggu bolak-balik ke host. Posisi dikirim 30×/dtk (tak andal) dan lawan digambar dengan interpolasi + ekstrapolasi.
-     Dunia bersama (tong, api, boss, gerbang/soal, skor, tabrakan) tetap diputuskan HOST, disiarkan sebagai snapshot + kejadian 'hit'. */
-  const PKT_HZ = 30, SNAP_HZ = 15;
-  const newRem = () => ({ has: false, n: 0, x: 0, y: 0, vx: 0, vy: 0, g: 0, c: 0, f: 1, cp: 0, at: 0 });
-  O.rm = newRem();            // host: keadaan terakhir P2 dari tamu
-  O.r0 = newRem();            // tamu: keadaan terakhir P1 dari host
-  O.mr = [newRem(), newRem()];   // master: keadaan terakhir P1 & P2 dari host
-  const MOVE_KEYS = ['x', 'y', 'vx', 'vy', 'onGround', 'facing', 'coyote', 'jumpBuf', 'climbing', 'ladderCd', 'climbPhase'];   // dikirim lewat paket posisi, bukan snapshot
+  /* MODEL ONLINE = "BALAPAN DUNIA SENDIRI" (sama seperti Kebun Angka / FloraBite):
+     tiap perangkat menjalankan SELURUH dunia permainan untuk pemainnya sendiri (tong, boss, api, gerbang, soal, koin, tabrakan, skor)
+     dengan SEED yang sama dari host, jadi gelombang tong & urutan soal identik untuk kedua pemain. Tidak ada yang menunggu jaringan:
+     tombol, lompatan, tabrakan, jawaban soal, dan skor semuanya instan di perangkat sendiri → tidak ada lag yang dirasakan P1 maupun P2.
+     Lawan hanya BAYANGAN: posisi (30×/dtk, interpolasi) + ringkasan skor (8×/dtk). Bayangan tidak menabrak tong / mengambil koin siapa pun.
+     Jaringan hanya dipakai untuk: 'go' (seed + pengaturan), posisi/skor lawan, dan penentuan pemenang di akhir oleh host.
+     ROOM MASTER = penonton: tersambung HANYA ke host; menerima posisi + skor kedua pemain (host meneruskan P2) dan menjalankan dunia
+     "acuan" dari seed yang sama (tanpa pemain) sehingga tong/boss yang dilihatnya sama dengan yang dihadapi pemain. */
+  const O = { on: false, host: false, guest: false, master: false, me: 0, ready: false, gen: 0, ended: false, waiting: false, net: null, name: '',
+    held: new Set(), seq: 0, accP: 0, accS: 0, dn: [null, null], dl: 0,
+    mnet: null, mReady: false };
+  const PKT_HZ = 30, ST_HZ = 8;
+  const newRem = () => ({ has: false, n: 0, x: 0, y: 0, vx: 0, vy: 0, g: 0, c: 0, f: 1, cp: 0, s: 0, at: 0 });
+  O.rm = newRem();            // host: bayangan P2 (dari tamu)
+  O.r0 = newRem();            // tamu: bayangan P1 (dari host)
+  O.mr = [newRem(), newRem()];   // master: bayangan P1 & P2 (dari host)
   const live = () => { const s = Game.getState(); return s === 'playing' || s === 'countdown'; };
   const clean = (s, d) => String(s || '').toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim().slice(0, 8) || d;
   const setNames = n => { players[0].name = clean(n && n[0], 'P1'); players[1].name = clean(n && n[1], 'P2'); };
@@ -2763,77 +2769,51 @@ const Online = (() => {
   O.msend = (ch, obj) => !!(O.mnet && O.mReady && O.mnet.send(ch, obj));      // host → Room Master
   O.bcast = (ch, obj) => { const a = O.send(ch, obj); O.msend(ch, obj); return a; };   // host → tamu + master
 
-  /* Rute tombol: host memetakan panah/Enter ke tombol P1; tamu meneruskan tombol sebagai input P2 ke host. */
+  /* Rute tombol: host memetakan panah/Enter ke tombol P1; tamu memetakan WASD/Spasi ke tombol P2. Semua diproses LOKAL. */
   O.route = (c, d) => {
-    if (!O.on) return c;
+    if (!O.on || O.master) return c;
     if (O.host) return (live() && HMAP[c]) || c;
-    if (O.master) return c;                                   // penonton: tombol tidak pernah dikirim ke host
     const m = GMAP[c]; if (!m) return c;
-    if (d) {
-      if (!live()) return c;
-      O.held.add(m); O.send('r', { t: 'k', c: m, d: 1 });      // host tetap diberi tahu (gerbang/jawaban soal); gerak dijalankan LOKAL
-      return m;
-    }
+    if (d) { if (!live()) return c; O.held.add(m); return m; }
     const was = O.held.delete(m);
-    if (was) O.send('r', { t: 'k', c: m, d: 0 });
     return (was || live()) ? m : c;
   };
-  O.relHeld = () => { for (const m of O.held) O.send('r', { t: 'k', c: m, d: 0 }); O.held.clear(); };
-  O.relRemote = () => { for (const c of O.remote) Input.inject(c, 0); O.remote.clear(); };
+  O.relHeld = () => { for (const m of O.held) Input.inject(m, 0); O.held.clear(); };
   window.addEventListener('blur', () => { if (O.on) O.relHeld(); });
   document.addEventListener('visibilitychange', () => { if (O.on && document.hidden) O.relHeld(); });
 
-  /* Efek & suara dari host diteruskan ke tamu (tanpa dobel: SFX di dalam FX.event tidak ikut dikirim). */
-  const fe = FX.event, sp = SFX.play;
-  const qm = e => { if (O.mevq.length < 120) O.mevq.push(e); };     // efek yang dimainkan tamu sendiri (dibisukan di jalur tamu) tetap perlu sampai ke master
-  FX.event = function () {
-    O.depth++; try { fe.apply(FX, arguments); } finally { O.depth--; }
-    if (!O.host) return;
-    const e = ['f'].concat([].slice.call(arguments));
-    if (O.ready && !O.muteF) O.evq.push(e); else if (O.mReady && O.muteF) qm(e);
-  };
-  SFX.play = function (n) {
-    sp.apply(SFX, arguments);
-    if (!O.host || O.depth) return;
-    if (O.ready && !O.muteF) O.evq.push(['s', n]); else if (O.mReady && O.muteF) qm(['s', n]);
-  };
-
-  /* Host memutuskan tabrakan; untuk P2 (dikendalikan tamu) hasilnya dikirim sebagai kejadian andal 'hit'
-     dan tamu menerapkan lentingan itu pada simulasi lokalnya. Efek 'hit' dibisukan di jalur siaran agar tidak dobel. */
-  const hp = Physics.hitPlayer;
-  Physics.hitPlayer = function (p, b) {
-    if (!(O.host && O.ready && p.index === 1) || p.invuln > 0) return hp.apply(Physics, arguments);
-    O.muteF++; try { hp.apply(Physics, arguments); } finally { O.muteF--; }
-    O.send('r', { t: 'hit', x: Math.round(b.x) });
-  };
-  O.remoteCtl = p => O.host && O.ready && p.index === 1;
   O.owd = () => O.net ? Math.min(0.4, (O.net.rtt || 0) / 2000) : 0;
+  O.newSeed = () => 1 + Math.floor(Math.random() * 2147483646);
 
   /* ----- Paket posisi pemain sendiri (tak andal, 30×/dtk) & penerimaannya ----- */
   const R1 = v => Math.round(v * 10) / 10;
   const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, +v || 0));
   O.pkt = () => {
     const p = players[O.me];
-    return { t: 'p', i: O.me, n: ++O.seq, x: R1(p.x), y: R1(p.y), vx: Math.round(p.vx), vy: Math.round(p.vy), g: p.onGround ? 1 : 0,
-      c: p.climbing && p.ladder ? Level.ladders.indexOf(p.ladder) + 1 : 0, f: p.facing < 0 ? -1 : 1, cp: Math.round(p.climbPhase) };
+    return { t: 'p', i: O.me, n: ++O.seq, x: R1(p.x), y: R1(p.y), vx: Math.round(p.vx + (p.climbing || p.panel ? 0 : Tilt.slide() * (p.hammer > 0 ? 0.5 : 1))), vy: Math.round(p.vy), g: p.onGround ? 1 : 0,
+      c: p.climbing && p.ladder ? Level.ladders.indexOf(p.ladder) + 1 : 0, f: p.facing < 0 ? -1 : 1, cp: Math.round(p.climbPhase),
+      s: (p.hitTimer > 0 ? 1 : 0) | (p.invuln > 0 ? 2 : 0) | (p.panel ? 4 : 0) };
   };
-  O.recvPkt = (m, r, p) => {                                  // r = keadaan jarak jauh yang diperbarui, p = pemain yang digerakkan; true bila diterima
+  O.recvPkt = (m, r, p) => {                                  // r = keadaan bayangan yang diperbarui, p = pemain bayangan; true bila diterima
     if (typeof m.n !== 'number' || m.n <= r.n || !isFinite(m.x) || !isFinite(m.y)) return false;     // basi / tak berurutan / tak valid
     const c = m.c | 0;
     r.n = m.n; r.at = performance.now();
     r.x = clampN(m.x, 0, CONFIG.W - p.w); r.y = clampN(m.y, -40, CONFIG.H + 80);
     r.vx = clampN(m.vx, -900, 900); r.vy = clampN(m.vy, -1500, 1500);
-    r.g = m.g ? 1 : 0; r.c = c > 0 && c <= Level.ladders.length ? c : 0; r.f = m.f < 0 ? -1 : 1; r.cp = clampN(m.cp, 0, 1e6);
+    r.g = m.g ? 1 : 0; r.c = c > 0 && c <= Level.ladders.length ? c : 0; r.f = m.f < 0 ? -1 : 1; r.cp = clampN(m.cp, 0, 1e6); r.s = m.s | 0;
     if (!r.has) { r.has = true; p.x = r.x; p.y = r.y; }
     return true;
   };
-  /* Gambar/ikuti pemain lawan: ekstrapolasi singkat dari kecepatan terakhir + penghalusan (menutup jeda paket tanpa tersendat). */
+  /* Gambar/ikuti bayangan lawan: ekstrapolasi singkat dari kecepatan terakhir + penghalusan (menutup jeda paket tanpa tersendat). */
   O.follow = (p, r, dt, rate) => {
     if (!r.has) return;
     const age = Math.min(0.1, (performance.now() - r.at) / 1000);
     const tx = r.x + (r.c ? 0 : r.vx * age), ty = r.y + (r.g || r.c ? 0 : r.vy * age);
     p.vx = r.vx; p.vy = r.vy; p.onGround = !!r.g; p.facing = r.f; p.climbPhase = r.cp;
     p.climbing = !!r.c; p.ladder = r.c ? Level.ladders[r.c - 1] : null;
+    const hit = r.s & 1;
+    if (hit && !p.hitTimer) FX.burst(p.x + p.w / 2, p.y + p.h / 2, 14, ['#ff4d4d', '#ff8a3d', '#ffd23f', '#ffffff'], 170, 0.5, 420, 3);   // tanpa kilatan layar: bukan kita yang kena
+    p.hitTimer = hit ? 0.2 : 0; p.invuln = (r.s & 2) ? 0.3 : 0; p.ghostAns = !!(r.s & 4);
     const dx = tx - p.x, dy = ty - p.y;
     if (dx * dx + dy * dy > 8100) { p.x = tx; p.y = ty; return; }          // terlalu jauh (respawn/teleport): langsung loncat
     const k = 1 - Math.exp(-dt * rate);
@@ -2841,194 +2821,86 @@ const Online = (() => {
     if ((r.g || r.c) && Math.abs(dy) < 6) p.y = ty;                         // berdiri/memanjat: y harus persis (gerbang, garis akhir)
     if (Math.abs(dx) < 0.2) p.x = tx;
   };
-  /* Host: P2 tidak disimulasikan; hanya timer efeknya + mengikuti posisi dari tamu. */
-  O.stepRemote = (p, dt) => {
-    Physics.tick(p, dt);
-    const r = O.rm, wasG = p.onGround, wasVy = p.vy;
-    O.follow(p, r, dt, 30);
-    if (r.has) {
-      O.muteF++;                                                          // tamu sudah memainkan efeknya sendiri
-      try {
-        if (wasG && !p.onGround && !p.climbing && p.vy < -200) FX.event('jump', p.x + p.w / 2, p.y + p.h);
-        else if (!wasG && p.onGround && wasVy > 280) FX.event('land', p.x + p.w / 2, p.y + p.h);
-      } finally { O.muteF--; }
-    }
-    if (p.onGround) p.chain = 0;
-  };
-  /* Tamu: navigasi pilihan jawaban diproses lokal (instan); host tetap menerima tombolnya & memutuskan jawaban. */
-  O.guestPanelInput = () => {
-    const p = players[O.me], pn = p.panel;
-    if (!pn || pn.phase !== 'ask') return;
-    const k = KEYMAP[O.me]; let ch = false;
-    if (Input.wasPressed(k.left) || Input.wasPressed(k.right)) { pn.sel ^= 1; ch = true; }
-    if (Input.wasPressed(k.up) || Input.wasPressed(k.down)) { pn.sel ^= 2; ch = true; }
-    if (ch) O.selT = performance.now();
+
+  /* ----- Ringkasan skor/status pemain (8×/dtk, tak andal) & statistik akhir (andal) ----- */
+  const gmask = idx => { let m = 0; Level.gates.forEach((g, i) => { if (!g.alias && g.open[idx]) m |= 1 << i; }); return m; };
+  O.stat = p => ({ sc: p.score, co: p.coins, gm: p.gems, ht: p.hits, sv: p.solved, wr: p.wrong, sk: p.streak, ct: Math.round(p.comboT * 10) / 10,
+    sh: Math.ceil(p.shield), ha: Math.ceil(p.hammer), bo: Math.ceil(p.boost), sl: p.slow > 0 ? 1 : 0, fi: p.finished ? 1 : 0,
+    pt: [p.pts.coin, p.pts.gem, p.pts.math, p.pts.finish, p.pts.skill], gt: gmask(p.index) });
+  const ni = (v, d) => { v = Math.round(Number(v)); return Number.isFinite(v) ? v : (d || 0); };
+  O.putStat = (p, s) => {
+    if (!s || typeof s !== 'object' || p.index === O.me) return;           // milik kita sendiri tidak pernah ditimpa
+    p.score = Math.max(0, ni(s.sc)); p.coins = Math.max(0, ni(s.co)); p.gems = Math.max(0, ni(s.gm)); p.hits = Math.max(0, ni(s.ht));
+    p.solved = Math.max(0, ni(s.sv)); p.wrong = Math.max(0, ni(s.wr)); p.streak = Math.max(0, Math.min(99, ni(s.sk))); p.comboT = Math.max(0, Math.min(CONFIG.COMBO_TIME, +s.ct || 0));
+    p.shield = Math.max(0, ni(s.sh)); p.hammer = Math.max(0, ni(s.ha)); p.boost = Math.max(0, ni(s.bo)); p.slow = s.sl ? 1 : 0; p.finished = !!s.fi;
+    const pt = Array.isArray(s.pt) ? s.pt : [];
+    p.pts.coin = ni(pt[0]); p.pts.gem = ni(pt[1]); p.pts.math = ni(pt[2]); p.pts.finish = ni(pt[3]); p.pts.skill = ni(pt[4]);
+    const gt = ni(s.gt); Level.gates.forEach((g, i) => { if (!g.alias) g.open[p.index] = !!((gt >> i) & 1); });
   };
 
-  /* ----- Snapshot dunia (host -> tamu) -----
-     Dirancang KECIL (<1 KB, jauh di bawah ukuran 1 paket jaringan ±1200 B) agar tidak terfragmentasi/hilang di jaringan seluler
-     dan tidak membuat antrean kirim yang menaikkan ping:
-       • pemain: hanya FIELD YANG BERUBAH sejak snapshot terakhir (delta); snapshot penuh tiap ±1 dtk sebagai penyelamat bila ada paket hilang;
-       • tong/api: hanya yang aktif, larik angka bulat (tamu menghitung putaran sendiri);
-       • gerbang/collectible/palu/skor: hanya dikirim saat berubah;
-       • teks soal + pilihan jawaban: sekali lewat kanal andal ('pq'), bukan di tiap snapshot. */
-  O.sent = {}; O.snapN = 0; O.qs = [0, 0]; O.qk = ['', ''];
-  O.pq = [null, null]; O.hold = [null, null];        // tamu: soal terakhir dari host per pemain {qs, q}; hold = keadaan panel gabungan
-  const chg = (k, v, full) => { const s = JSON.stringify(v); if (!full && O.sent[k] === s) return false; O.sent[k] = s; return true; };
-  O.resetSnap = () => { O.sent = {}; O.snapN = 0; O.qk = ['', '']; O.pq = [null, null]; O.hold = [null, null]; };
-  /* Tamu: panel baru ditampilkan bila lengkap; soal fase 'ask' hanya dari kanal andal 'pq' dengan nomor (qs) yang cocok. */
-  O.showPanel = (i, keepSel) => {
-    const np = O.hold[i], p = players[i], pq = O.pq[i];
-    if (!np || np.phase === undefined || np.gi === undefined || np.qs === undefined || !np.gate) { p.panel = null; return; }
-    if (np.phase === 'ask') { if (pq && pq.qs === np.qs) np.q = pq.q; else { p.panel = null; return; } }
-    if (!np.q) { p.panel = null; return; }
-    p.panel = np;
-    if (keepSel >= 0 && np.phase === 'ask') np.sel = keepSel;     // pilihan yang baru ditekan jangan ditimpa snapshot lama
+  /* ----- Akhir pertandingan: tiap pemain selesai di dunianya sendiri ('done'), HOST yang memutuskan pemenang ('end') ----- */
+  O.localEnd = (r, el) => {
+    const rec = { t: 'done', g: O.gen, reason: r.reason === 'finish' ? 'finish' : 'time', el: Math.round(el * 1000) / 1000, s: O.stat(players[O.me]) };
+    O.waiting = true; O.dn[O.me] = rec; O.dl = performance.now();
+    if (O.guest) O.send('r', rec);
+    else if (O.host) O.tryDecide();
   };
-  O.snap = full => {
+  const scoreOf = (rec, p) => rec ? rec.s.sc : p.score;
+  const byScore = (a, b) => { const x = scoreOf(a, players[0]), y = scoreOf(b, players[1]); return x > y ? 0 : y > x ? 1 : -1; };
+  O.tryDecide = () => {
+    if (!O.host || O.ended) return;
+    const a = O.dn[0], b = O.dn[1], age = O.dl ? performance.now() - O.dl : 0;
+    const fa = !!a && a.reason === 'finish', fb = !!b && b.reason === 'finish';
+    const rtt = O.net ? (O.net.rtt || 0) : 0;
+    let r = null;
+    if (fa && fb) { const d = a.el - b.el; r = Math.abs(d) < 0.02 ? { reason: 'both', winner: byScore(a, b) } : { reason: 'finish', winner: d < 0 ? 0 : 1 }; }
+    else if (fb) r = { reason: 'finish', winner: 1 };                                       // tamu tiba lebih dulu
+    else if (fa) { if (b || age >= Math.min(900, rtt / 2 + 150)) r = { reason: 'finish', winner: 0 }; }   // beri waktu pesan 'tiba' tamu yang mungkin lebih awal
+    else if (a && b) r = { reason: 'time', winner: byScore(a, b) };
+    else if (a && age >= 6000) r = { reason: 'time', winner: byScore(a, b) };              // tamu tak kunjung selesai: pakai skor terakhirnya
+    if (!r) return;
+    r.elapsed = Game.getElapsed();
+    const st = [a ? a.s : O.stat(players[0]), b ? b.s : O.stat(players[1])];
+    O.ended = true; O.waiting = false;
+    O.putStat(players[1], st[1]);
+    O.bcast('r', { t: 'end', g: O.gen, r: r, st: st });
+    Game.net.end(r);
+  };
+  /* Pesan 'end' dari host (tamu & master): statistik lawan (dan kedua pemain untuk master) disamakan dengan keputusan host. */
+  O.recvEnd = m => {
+    if (m.g !== O.gen || O.ended) return;
+    O.ended = true; O.waiting = false;
+    if (Array.isArray(m.st)) { O.putStat(players[0], m.st[0]); O.putStat(players[1], m.st[1]); }
+    Game.net.end(m.r);
+  };
+
+  /* ----- Mulai pertandingan ----- */
+  O.goMsg = seed => {
     const G = Game.net.get();
-    if (++O.snapN % 15 === 0) full = true;
-    const s = { t: 's', g: O.gen, st: G.st, cd: Math.round(G.cd * 100) / 100, el: Math.round(G.el * 100) / 100, fin: Tension.finale ? 1 : 0 };
-    const bs = prim(Boss.S), ts = prim(Tilt.S);
-    if (chg('bs', bs, full)) s.bs = bs;
-    s.ts = ts;                                              // sudut miring berubah tiap frame; kecil saja
-    s.P = players.map((p, i) => {
-      const o = prim(p), out = {};
-      for (const f of MOVE_KEYS) delete o[f];
-      for (const k in o) if (chg('P' + i + k, o[k], full)) out[k] = o[k];
-      const pt = prim(p.pts), po = {};
-      for (const k in pt) if (chg('P' + i + 'pts' + k, pt[k], full)) po[k] = pt[k];
-      for (const _ in po) { out.pts = po; break; }
-      const pn = p.panel, had = chg('P' + i + 'pnx', pn ? 1 : 0, full);       // panel baru muncul/hilang → kirim lengkap
-      if (!pn) { O.qk[i] = ''; if (had) out.pn = null; }
-      else {
-        const f = prim(pn); f.gi = Level.gates.indexOf(pn.gate); f.fb = pn.fb;
-        if (pn.phase === 'ask') {
-          const qk = pn.q.text + '|' + pn.q.options.join(',');
-          if (qk !== O.qk[i]) { O.qk[i] = qk; O.qs[i]++; O.bcast('r', { t: 'pq', g: O.gen, i: i, qs: O.qs[i], q: { text: pn.q.text, options: pn.q.options, tier: pn.q.tier } }); }
-        } else f.q = pn.q;                                  // fase umpan balik: sertakan kunci jawaban (kecil, jarang)
-        f.qs = O.qs[i];
-        const pf = {};
-        for (const k in f) {
-          if (had) { O.sent['P' + i + 'pn' + k] = JSON.stringify(f[k]); pf[k] = f[k]; }
-          else if (chg('P' + i + 'pn' + k, f[k], full)) pf[k] = f[k];
-        }
-        for (const _ in pf) { out.pn = pf; break; }
-      }
-      return out;
-    });
-    const B = [], F = [];
-    Barrels.pool.forEach((b, i) => {
-      if (!b.active) return;
-      const L = b.onLadder ? 1 : 0, kd = b.kind === 'fast' ? 1 : b.kind === 'ladder' ? 2 : 0;
-      B.push([i, Math.round(b.x), Math.round(b.y), Math.round(b.vx), L ? 130 : Math.round(b.vy), (b.grounded ? 1 : 0) | (b.dir > 0 ? 2 : 0) | (kd << 2) | (L << 4)]);
-    });
-    Flames.pool.forEach((f, i) => { if (f.active) F.push([i, Math.round(f.x), Math.round(f.y), f.dir > 0 ? 1 : 0, f.climb ? (f.climb.dir < 0 ? 1 : 2) : 0, Math.round(f.life)]); });
-    s.B = B; s.F = F;
-    const rd = v => Math.round(v * 10) / 10;
-    const Gt = Level.gates.map(g => g.alias ? 0 : [g.open[0] ? 1 : 0, g.open[1] ? 1 : 0, rd(g.cool[0]), rd(g.cool[1])]);
-    const C = Level.collectibles.map(c => c.active ? 1 : 0), H = Level.hammers.map(c => c.active ? 1 : 0);
-    const S = Score.pool.map(q => q.active ? [Math.round(q.x), Math.round(q.y), q.text, q.color, Math.round(q.life * 10) / 10] : 0);
-    if (chg('G', Gt, full)) s.G = Gt;
-    if (chg('C', C, full)) s.C = C;
-    if (chg('H', H, full)) s.H = H;
-    if (chg('S', S, full)) s.S = S;
-    if (O.evq.length) s.ev = O.evq.splice(0);
-    return s;
+    return { t: 'go', g: O.gen, seed: seed, s: { difficulty: settings.difficulty, duration: settings.duration, qtime: settings.qtime }, n: [players[0].name, players[1].name],
+      cd: G.st === 'countdown' ? G.cd : 0, el: G.st === 'countdown' ? 0 : G.el };
   };
-  const setEnt = (e, o) => {
-    const was = e.active !== false, ox = e.x, oy = e.y, near = was && Math.abs(o.x - ox) < 90 && Math.abs(o.y - oy) < 90;
-    Object.assign(e, o); e.active = true; e.tx = o.x; e.ty = o.y; e.tt = performance.now();
-    if (near) { e.x = ox; e.y = oy; }
-  };
-  O.apply = s => {
-    if (s.g !== O.gen || O.ended || Game.getState() === 'menu') return;
-    const owd = O.owd();                                  // snapshot sudah berumur ±setengah ping: koreksi supaya jam & hitung mundur tidak tertinggal
-    Game.net.set(s.st, s.st === 'countdown' ? Math.max(0, s.cd - owd) : s.cd, s.st === 'playing' ? s.el + owd : s.el, s.fin);
-    if (s.bs) Object.assign(Boss.S, s.bs);
-    Object.assign(Tilt.S, s.ts);
-    s.P.forEach((o, i) => {
-      const p = players[i], pn = o.pn, pts = o.pts; delete o.pn; delete o.pts;
-      const mine = i === O.me, keepSel = mine && p.panel && performance.now() - O.selT < 400 ? p.panel.sel : -1;
-      if (mine) { delete o.hitTimer; delete o.throwT; delete o.chain; if (o.invuln !== undefined) o.invuln = Math.max(p.invuln || 0, o.invuln); }   // dikelola simulasi lokal
-      Object.assign(p, o); if (pts) Object.assign(p.pts, pts);
-      if (pn === null) { O.hold[i] = null; p.panel = null; }
-      else if (pn) {
-        const np = Object.assign(O.hold[i] || {}, pn); O.hold[i] = np;
-        if (np.gi !== undefined) np.gate = Level.gates[np.gi];
-        O.showPanel(i, keepSel);
-      }
-    });
-    Barrels.pool.forEach(b => { b.seen = false; });
-    for (const a of s.B) {
-      const b = Barrels.pool[a[0]]; if (!b) continue;
-      const fl = a[5]; b.seen = true;
-      setEnt(b, { x: a[1], y: a[2], vx: a[3], vy: a[4], grounded: !!(fl & 1), dir: fl & 2 ? 1 : -1, kind: ['normal', 'fast', 'ladder'][(fl >> 2) & 3] || 'normal' });
-      b.onLadder = (fl & 16) ? {} : null;
-    }
-    Barrels.pool.forEach(b => { if (!b.seen) b.active = false; });
-    Flames.pool.forEach(f => { f.seen = false; });
-    for (const a of s.F) {
-      const f = Flames.pool[a[0]]; if (!f) continue;
-      f.seen = true;
-      const dir = a[3] ? 1 : -1, cl = a[4];
-      setEnt(f, { x: a[1], y: a[2], dir: dir, life: a[5], vx: cl ? 0 : dir * (FLAME_SPEED[settings.difficulty] || 0), vy: cl === 1 ? -34 : cl === 2 ? 34 : 0 });
-      f.climb = cl ? { L: null, dir: cl === 1 ? -1 : 1 } : null;
-    }
-    Flames.pool.forEach(f => { if (!f.seen) { f.active = false; f.climb = null; } });
-    if (s.G) Level.gates.forEach((g, i) => { const a = s.G[i]; if (a) { g.open[0] = !!a[0]; g.open[1] = !!a[1]; g.cool[0] = a[2]; g.cool[1] = a[3]; } });
-    if (s.C) Level.collectibles.forEach((c, i) => { c.active = !!s.C[i]; });
-    if (s.H) Level.hammers.forEach((c, i) => { c.active = !!s.H[i]; });
-    if (s.S) Score.pool.forEach((q, i) => { const a = s.S[i]; if (a) { q.active = true; q.x = a[0]; q.y = a[1]; q.text = a[2]; q.color = a[3]; q.life = a[4]; } else q.active = false; });
-    if (s.ev) for (const e of s.ev) { if (e[0] === 'f') FX.event.apply(FX, e.slice(1)); else SFX.play(e[1]); }
-  };
-  const ease = (e, k, nowMs) => {
-    if (e.tx === undefined || e.active === false) return;
-    const age = Math.min(0.12, (nowMs - (e.tt || nowMs)) / 1000);               // dead-reckoning: lanjutkan gerak sejak snapshot terakhir
-    const tx = e.tx + (e.vx || 0) * age, ty = e.ty + (e.grounded && !e.onLadder ? 0 : (e.vy || 0) * age);
-    e.x += (tx - e.x) * k; e.y += (ty - e.y) * k;
-  };
-  O.frame = (now, dt) => {
-    const st = Game.getState();
-    $('ping').classList.toggle('hidden', !(O.on && st !== 'menu'));
-    if (O.ready && live() && !O.master) {
-      O.accP += dt;                                       // akumulator (bukan "now - last >= N"): laju kirim tidak terkuantisasi ke frame
-      if (O.accP >= 1 / PKT_HZ) { O.accP = Math.min(O.accP - 1 / PKT_HZ, 1 / PKT_HZ); const pk = O.pkt(); O.net.send('u', pk); if (O.host) O.msend('u', pk); }
-      if (O.host) {
-        O.accS += dt;
-        if (O.accS >= 1 / SNAP_HZ) {
-          O.accS = Math.min(O.accS - 1 / SNAP_HZ, 1 / SNAP_HZ);
-          const s = O.snap(O.mFull); O.mFull = false;
-          O.net.send('u', s);
-          if (O.mReady) O.mnet.send('u', O.mevq.length ? Object.assign({}, s, { ev: (s.ev || []).concat(O.mevq.splice(0)) }) : s);
-        }
-      }
-    }
-    if (O.host) return;
-    const k = 1 - Math.exp(-dt * 24), nowMs = performance.now();
-    if (O.master) { O.follow(players[0], O.mr[0], dt, 30); O.follow(players[1], O.mr[1], dt, 30); }
-    else O.follow(players[0], O.r0, dt, 30);
-    Barrels.pool.forEach(b => { ease(b, k, nowMs); if (b.active) b.angle += (b.onLadder ? 6 : (b.vx || 0) / CONFIG.BARREL_R) * dt; });   // putaran dihitung lokal
-    Flames.pool.forEach(f => { ease(f, k, nowMs); if (f.active && f.life > 0) f.life -= dt; });
-  };
-  O.sendEnd = r => { O.ended = true; O.mevq.length = 0; O.bcast('r', { t: 'end', g: O.gen, r: r, s: O.snap(true) }); };
-  O.goMsg = () => ({ t: 'go', g: O.gen, s: { difficulty: settings.difficulty, duration: settings.duration, qtime: settings.qtime }, n: [players[0].name, players[1].name] });
-  O.sendGo = () => {
-    O.gen++; O.ended = false; O.relRemote(); O.evq.length = 0; O.mevq.length = 0; O.rm.has = false; O.resetSnap();
+  O.sendGo = seed => {
+    O.gen++; O.ended = false; O.waiting = false; O.dn = [null, null]; O.dl = 0; O.rm.has = false;
     setNames([O.name, O.net && O.net.peerName]);
-    O.bcast('r', O.goMsg());
+    O.seed = seed;
+    O.bcast('r', O.goMsg(seed));
   };
-  /* Host: Room Master baru tersambung (bisa di tengah pertandingan) → kirim keadaan terkini supaya ia langsung bisa menonton. */
+  /* Host: Room Master baru tersambung (bisa di tengah pertandingan) → kirim seed + waktu berjalan; master menjalankan dunia acuan yang sama. */
   O.syncMaster = () => {
-    O.mevq.length = 0; O.mFull = true;
     const st = Game.getState();
-    if (!(O.gen > 0 && (st === 'countdown' || st === 'playing' || st === 'result'))) return;
-    O.msend('r', O.goMsg());
-    for (let i = 0; i < 2; i++) {
-      const pn = players[i].panel;
-      if (pn && pn.phase === 'ask') O.msend('r', { t: 'pq', g: O.gen, i: i, qs: O.qs[i], q: { text: pn.q.text, options: pn.q.options, tier: pn.q.tier } });
-    }
-    if (st === 'result') O.msend('r', { t: 'end', g: O.gen, r: Game.getResult(), s: O.snap(true) });
+    if (!(O.gen > 0 && O.seed && (st === 'countdown' || st === 'playing' || st === 'result'))) return;
+    O.msend('r', O.goMsg(O.seed));
+    if (st === 'result') O.msend('r', { t: 'end', g: O.gen, r: Game.getResult(), st: [O.stat(players[0]), O.stat(players[1])] });
+  };
+  /* Tamu / master: 'go' dari host. Hitung mundur / jam dikoreksi setengah ping supaya semua mencapai "GO!" bersamaan. */
+  O.recvGo = m => {
+    O.gen = m.g; O.ended = false; O.waiting = false; O.dn = [null, null]; O.dl = 0; O.seed = m.seed;
+    O.r0.has = O.mr[0].has = O.mr[1].has = false;
+    Object.assign(settings, m.s); setNames(m.n);
+    const owd = O.owd(), cd = +m.cd || 0;
+    $('lobby').classList.add('hidden');
+    Game.net.start(m.seed, cd > 0 ? Math.max(0.2, cd - owd) : 0, (+m.el || 0) + (cd > 0 ? 0 : owd));
   };
 
   /* ----- Pesan masuk ----- */
@@ -3039,25 +2911,39 @@ const Online = (() => {
       else O.recvPkt(m, O.r0, players[0]);
       return;
     }
+    if (m.t === 'st') {
+      if (m.g !== O.gen) return;
+      if (O.host) { O.putStat(players[1], m.s); if (O.mReady) O.mnet.send('u', Object.assign({}, m, { i: 1 })); }
+      else if (O.master) O.putStat(players[m.i === 1 ? 1 : 0], m.s);
+      else O.putStat(players[0], m.s);
+      return;
+    }
     if (O.host) {
-      if (m.t === 'k' && P2.indexOf(m.c) >= 0) {
-        if (m.d && !live()) return;
-        if (m.d) O.remote.add(m.c); else O.remote.delete(m.c);
-        Input.inject(m.c, m.d ? 1 : 0);
-      } else if (m.t === 'ans' && live()) {
-        const p = players[1], i = m.i | 0;
-        if (p.panel && p.panel.phase === 'ask' && i >= 0 && i < 4) { p.panel.sel = i; Gates.answer(p, i); }
-      } else if (m.t === 'again' && Game.getState() === 'result') Game.net.begin();
+      if (m.t === 'done') { if (m.g === O.gen && !O.ended && m.s && typeof m.s === 'object' && live()) { O.dn[1] = m; O.tryDecide(); } }
+      else if (m.t === 'again' && Game.getState() === 'result') Game.net.begin();
     } else {
-      if (m.t === 'go') {
-        O.gen = m.g; O.ended = false; O.r0.has = false; O.mr[0].has = O.mr[1].has = false; O.resetSnap(); Object.assign(settings, m.s); setNames(m.n);
-        $('lobby').classList.add('hidden'); Game.net.start();
-      } else if (m.t === 's') O.apply(m);
-      else if (m.t === 'pq') { if (m.g === O.gen && (m.i === 0 || m.i === 1)) { O.pq[m.i] = m; if (O.hold[m.i]) O.showPanel(m.i, -1); } }
-      else if (m.t === 'hit') { if (!O.master && live() && !O.ended) { const p = players[O.me]; p.invuln = 0; Physics.hitPlayer(p, { x: +m.x || 0 }); } }
-      else if (m.t === 'end' && m.g === O.gen && !O.ended) { O.apply(m.s); O.ended = true; Game.net.end(m.r); }
+      if (m.t === 'go') O.recvGo(m);
+      else if (m.t === 'end') O.recvEnd(m);
     }
   }
+
+  O.frame = (now, dt) => {
+    const st = Game.getState();
+    $('ping').classList.toggle('hidden', !(O.on && st !== 'menu'));
+    if (O.ready && live() && !O.master) {
+      O.accP += dt;                                       // akumulator (bukan "now - last >= N"): laju kirim tidak terkuantisasi ke frame
+      if (O.accP >= 1 / PKT_HZ) { O.accP = Math.min(O.accP - 1 / PKT_HZ, 1 / PKT_HZ); const pk = O.pkt(); O.net.send('u', pk); if (O.host) O.msend('u', pk); }
+      O.accS += dt;
+      if (O.accS >= 1 / ST_HZ) {
+        O.accS = Math.min(O.accS - 1 / ST_HZ, 1 / ST_HZ);
+        const s = { t: 'st', i: O.me, g: O.gen, s: O.stat(players[O.me]) };
+        O.net.send('u', s); if (O.host) O.msend('u', s);
+      }
+    }
+    if (O.master) { O.follow(players[0], O.mr[0], dt, 30); O.follow(players[1], O.mr[1], dt, 30); }
+    else if (O.on) O.follow(players[O.me ? 0 : 1], O.host ? O.rm : O.r0, dt, 30);
+    if (O.host && O.waiting && !O.ended) O.tryDecide();
+  };
 
   /* ----- Lobi ----- */
   function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 3800); }
@@ -3109,7 +2995,7 @@ const Online = (() => {
   }
   function rebuildMaster(old) {
     const since = old.since;
-    O.mReady = false; O.mevq.length = 0; O.mnet = null;
+    O.mReady = false; O.mnet = null;
     try { old.teardown(); } catch (e) { /* abaikan */ }
     if (O.on && O.host) setTimeout(() => mkMaster(since), 50);
     status();
@@ -3130,11 +3016,11 @@ const Online = (() => {
     });
   }
   function reset() {
-    O.relRemote(); O.on = O.host = O.guest = O.master = O.ready = O.ended = false; O.net = null; O.held.clear(); O.evq.length = 0;
+    O.relHeld(); O.on = O.host = O.guest = O.master = O.ready = O.ended = O.waiting = false; O.net = null; O.held.clear();
     if (O.mnet) { try { O.mnet.teardown(); } catch (e) { /* abaikan */ } }
-    O.mnet = null; O.mReady = false; O.mFull = false; O.mevq.length = 0;
-    O.rm = newRem(); O.r0 = newRem(); O.mr = [newRem(), newRem()]; O.seq = 0; O.muteF = 0; O.accP = O.accS = 0;
-    document.body.classList.remove('online', 'guest', 'master'); setNames(null); showHome(); $('lobby').classList.add('hidden'); $('l-status').textContent = '';
+    O.mnet = null; O.mReady = false; O.dn = [null, null]; O.dl = 0; O.seed = 0;
+    O.rm = newRem(); O.r0 = newRem(); O.mr = [newRem(), newRem()]; O.seq = 0; O.accP = O.accS = 0;
+    document.body.classList.remove('online', 'guest', 'master'); setNames(null); setActors(); Rnd.unseed(); showHome(); $('lobby').classList.add('hidden'); $('l-status').textContent = '';
   }
   O.leave = () => { try { if (O.net) O.net.leave(); } catch (e) { /* abaikan */ } reset(); };
   const myName = () => { const v = $('l-name').value.trim(); try { localStorage.setItem('bb-name', v); } catch (e) { /* abaikan */ } O.name = v; return v; };
@@ -3190,10 +3076,13 @@ const Game = (() => {
   function startMatch() {
     if (Online.master) return;                              // penonton tidak bisa memulai
     if (Online.guest) { Online.send('r', { t: 'again' }); return; }
+    const seed = Online.host ? Online.newSeed() : 0;        // online: satu seed dari host untuk SEMUA perangkat (gelombang & soal sama)
+    Rnd.seed(seed);
     startMatchLocal();
-    if (Online.host) Online.sendGo();
+    if (Online.host) Online.sendGo(seed);
   }
   function startMatchLocal() {
+    setActors();
     resetPlayers();
     elapsed = 0;
     Barrels.reset();
@@ -3257,7 +3146,7 @@ const Game = (() => {
       const r = Gates.panelRect(p);
       for (let i = 0; i < 4; i++) {
         const o = Gates.optionRect(r, i);
-        if (x >= o.x && x <= o.x + o.w && y >= o.y && y <= o.y + o.h) { if (Online.guest) { pn.sel = i; Online.selT = performance.now(); Online.send('r', { t: 'ans', i: i }); } else { pn.sel = i; Gates.answer(p, i); } return; }
+        if (x >= o.x && x <= o.x + o.w && y >= o.y && y <= o.y + o.h) { pn.sel = i; Gates.answer(p, i); return; }
       }
     }
   }
@@ -3324,7 +3213,7 @@ const Game = (() => {
       if (Input.wasPressed('KeyN')) SFX.toggle();
       if (Input.wasPressed('KeyP') || Input.wasPressed('Escape')) pause();
       else if (Input.wasPressed('KeyR') && !Online.on) startMatch();
-      else if (state === 'playing') { if (Online.master) { /* penonton: tidak ada input */ } else if (Online.guest) Online.guestPanelInput(); else for (const p of players) Gates.handleInput(p); }   // gerbang & jawaban, per pemain
+      else if (state === 'playing') { if (Online.master || Online.waiting) { /* penonton / menunggu lawan: tidak ada input */ } else for (const p of ACT) Gates.handleInput(p); }   // gerbang & jawaban, per pemain
     }
   }
 
@@ -3334,16 +3223,10 @@ const Game = (() => {
   function toMenu() { if (Online.on) Online.leave(); state = 'menu'; Input.clear(); }
 
   /* ----- Update fisika (timestep tetap) ----- */
-  /* Tamu: gerak pemain sendiri dihitung LOKAL (respons instan, tanpa menunggu host). Tabrakan, skor, soal, tong, boss
-     tetap diputuskan host; tamu hanya menerima hasilnya (snapshot + kejadian 'hit'). */
-  function stepGuest(dt) {
-    if (state !== 'playing' || Online.ended) return;
-    Physics.update(players[Online.me], dt);
-    for (const k of KEYMAP) Input.consumeLatch(k.jump);
-  }
+  /* Online: tiap perangkat menyimulasikan dunia LENGKAP untuk pemainnya sendiri (ACT) → tidak ada yang menunggu jaringan.
+     Selesai (garis akhir / waktu habis) = kirim hasil ke host lalu menunggu keputusan pemenang (dunia dibekukan). Room Master menjalankan
+     dunia acuan tanpa pemain (seed sama) dan tidak pernah menilai pertandingan sendiri. */
   function step(dt) {
-    if (Online.master) return;                     // Room Master tidak menyimulasikan apa pun: semuanya dari host (snapshot + posisi kedua pemain)
-    if (Online.guest) { stepGuest(dt); return; }   // tamu hanya menyimulasikan GERAK pemainnya sendiri; dunia = snapshot host
     if (state === 'countdown') {
       countdown -= dt;
       const n = Math.ceil(countdown);
@@ -3352,11 +3235,12 @@ const Game = (() => {
       return;
     }
     if (state !== 'playing') return;
+    if (Online.waiting) return;                    // sudah selesai; menunggu keputusan host
     elapsed += dt;
     { const rf = Match.remaining(elapsed), fin = rf > 0 && rf <= 20;     // BABAK AKHIR: 20 detik terakhir
       if (fin && !Tension.finale) { finaleT = 3; FX.event('roar', 40, 80); }
       Tension.finale = fin; }
-    for (const p of players) { if (Online.remoteCtl(p)) Online.stepRemote(p, dt); else Physics.update(p, dt); }
+    for (const p of ACT) Physics.update(p, dt);
     Barrels.update(dt);
     Boss.update(dt);
     Tilt.update(dt, Boss.S.phase);
@@ -3369,8 +3253,18 @@ const Game = (() => {
     // di langkah fisika berikutnya (frame tanpa langkah fisika membiarkannya tetap menunggu)
     for (const k of KEYMAP) Input.consumeLatch(k.jump);
     { const rm = Math.ceil(Match.remaining(elapsed)); if (rm <= 10 && rm > 0 && rm !== tickLast) { tickLast = rm; SFX.play('tick'); } }
+    if (Online.master) return;                            // penonton tidak menilai
     const r = Match.evaluate(elapsed);                    // garis akhir / waktu habis, dinilai sekali per langkah
-    if (r) { endMatch(r); if (Online.host) Online.sendEnd(r); }
+    if (r) { if (Online.on) Online.localEnd(r, elapsed); else endMatch(r); }
+  }
+
+  /* Master yang masuk di tengah pertandingan: majukan dunia acuan secepat mungkin (tanpa suara/efek) sampai waktu host. */
+  function fastForward(sec) {
+    countdown = 0; state = 'playing'; goT = 0;
+    const sp = SFX.play, fe = FX.event; SFX.play = () => { }; FX.event = () => { };
+    try { for (let n = Math.floor(sec / CONFIG.STEP); n > 0; n--) step(CONFIG.STEP); }
+    finally { SFX.play = sp; FX.event = fe; }
+    FX.reset(); Input.clear(); acc = 0;
   }
 
   /* ----- Render ----- */
@@ -3823,7 +3717,8 @@ const Game = (() => {
       } else { ctx.fillStyle = p.color; ctx.fillRect(Math.round(p.x) + dx, y, p.w, p.h); }
     };
     if (p.boost > 0 && !p.climbing) { drawAt(-p.facing * 14, blink ? 0.1 : 0.18); drawAt(-p.facing * 7, blink ? 0.15 : 0.3); }
-    drawAt(0, blink ? 0.35 : 1);
+    const ga = (Online.on && !Online.master && p.index !== Online.me) ? 0.72 : 1;      // bayangan lawan: tembus pandang (tidak menabrak)
+    drawAt(0, blink ? 0.35 * ga : ga);
     ctx.globalAlpha = 1;
     if (p.hammer > 0 && !p.climbing && (p.hammer > 2 || Math.floor(t * 10) % 2 === 0)) {   // palu diayun bergantian: di atas kepala / di depan
       const f = p.facing, up = Math.floor(t * 7) % 2 === 0, hy = Math.round(p.y);
@@ -3853,6 +3748,7 @@ const Game = (() => {
       if (ctx.setLineDash) ctx.setLineDash([]);
     }
     // label pemain + panah kecil
+    if (p.ghostAns) textS('MENJAWAB...', cx, y - 28, 2, '#ffd23f', 'center');
     textS(p.name, cx, y - 15, 2, p.accent, 'center');
     ctx.fillStyle = p.accent;
     ctx.fillRect(cx - 2, y - 7, 5, 1); ctx.fillRect(cx - 1, y - 6, 3, 1); ctx.fillRect(cx, y - 5, 1, 1);
@@ -3899,7 +3795,7 @@ const Game = (() => {
     textS(`${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`, W / 2, 18, 4, low ? (blink ? '#ffffff' : '#ff4d4d') : '#ffffff', 'center');
     ctx.fillStyle = '#333'; ctx.fillRect(W / 2 - 70, 38, 140, 6);
     ctx.fillStyle = low ? '#ff4d4d' : '#7dff7a'; ctx.fillRect(W / 2 - 70, 38, 140 * Math.max(0, rem / dur), 6);
-    if (Online.master) textS('ROOM MASTER - MENONTON', W / 2, 62, 2, '#c28cff', 'center');
+    if (Online.master) textS('ROOM MASTER - MENONTON (TONG & BOSS = SEED SAMA DENGAN PEMAIN)', W / 2, 62, 2, '#c28cff', 'center');
   }
 
   function drawMenu() {
@@ -4032,6 +3928,10 @@ const Game = (() => {
       textS('GO!', CONFIG.W / 2 + 5, CONFIG.H / 2 + 5, 14, '#14502a', 'center');
       textS('GO!', CONFIG.W / 2, CONFIG.H / 2, 14, '#7dff7a', 'center');
     }
+    if (Online.waiting && state === 'playing') {                          // sudah selesai; menunggu keputusan host
+      textS('MENUNGGU LAWAN...', CONFIG.W / 2 + 4, CONFIG.H / 2 + 4, 7, '#14142b', 'center');
+      textS('MENUNGGU LAWAN...', CONFIG.W / 2, CONFIG.H / 2, 7, '#ffd23f', 'center');
+    }
     if (state === 'paused') { ctx.save(); ctx.translate(UI_OFFX, UI_OFF); drawPause(); ctx.restore(); }
     if (state === 'result') { ctx.save(); ctx.translate(UI_OFFX, UI_OFF); drawResult(); ctx.restore(); drawParticles(); }
   }
@@ -4105,7 +4005,7 @@ const Game = (() => {
   /* ----- Bahaya: tong/api yang mendekat di tingkat yang sama memunculkan tanda seru & tepi layar memerah ----- */
   function updateDanger(dt) {
     let top = 0;
-    for (const p of players) {
+    for (const p of ACT) {
       const cx = p.x + p.w / 2, feet = p.y + p.h; let w = 0;
       if (!p.climbing) {
         for (const b of Barrels.pool) {
@@ -4138,7 +4038,7 @@ const Game = (() => {
 
   function drawWarnMarks() {
     if (Math.floor(t * 10) % 2) return;
-    for (const p of players) {
+    for (const p of ACT) {
       if (warn[p.index] < 0.3 || p.climbing) continue;
       const cx = Math.round(p.x + p.w / 2), y = Math.round(p.y - 14);
       ctx.fillStyle = '#1a0f12'; ctx.fillRect(cx - 7, y - 12, 14, 16);
@@ -4160,12 +4060,7 @@ const Game = (() => {
     init,
     net: {
       get: () => ({ st: state, cd: countdown, el: elapsed }),
-      set(st, cd, el, fin) {
-        if (st === 'playing' && state === 'countdown') { goT = 0.8; Input.clearLatch(); }
-        if (fin && !Tension.finale) finaleT = 3;
-        Tension.finale = !!fin; state = st; countdown = cd; elapsed = el;
-      },
-      start: () => startMatchLocal(),
+      start: (seed, cd, el) => { Rnd.seed(seed); startMatchLocal(); if (cd > 0) countdown = cd; else fastForward(el); },
       begin: () => startMatch(),
       end: r => endMatch(r),
       menu: () => { state = 'menu'; Input.clear(); }

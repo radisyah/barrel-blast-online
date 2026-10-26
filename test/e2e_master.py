@@ -6,7 +6,8 @@ Pakai:  python3 test/e2e_master.py [folder-proyek] [delay_ms_per_arah]
 Yang diperiksa:
   - master bergabung lewat tombol lobi, tersambung ke HOST (bukan ke tamu), host melihat statusnya
   - master melihat gerak P1 dan P2 secara langsung (posisi sama dengan di layar pemain)
-  - master melihat panel soal P2, tabrakan tong P2, dan skor
+  - master melihat bayangan P2 terkena tong / sedang menjawab soal, gerbang yang terbuka, dan skor kedua pemain
+  - master menjalankan dunia acuan dari seed yang sama (tong & boss sama dengan pemain)
   - master tidak bisa mengendalikan siapa pun (tombol di master tidak sampai ke host)
   - master keluar di tengah pertandingan -> pertandingan jalan terus; master BARU bisa masuk di tengah pertandingan dan langsung menonton
   - hasil pertandingan juga tampil di master; master tidak punya "MAIN LAGI"
@@ -96,7 +97,7 @@ try:
         r, d = near(h, m, 'players[0].x'); check('gerak P1 tampil di master (selisih < 4 px)', r and h.evaluate('players[0].x') > x0 + 20, (round(x0),) + d)
 
         # --- tabrakan tong pada P2: master ikut melihat P2 terpental ---
-        h.evaluate("""()=>{const q=players[1], b=Barrels.pool[0]; q.invuln=0;
+        g.evaluate("""()=>{const q=players[1], b=Barrels.pool[23]; q.invuln=0;
           Object.assign(b,{active:true,x:q.x+q.w/2,y:q.y+q.h-CONFIG.BARREL_R,vx:0,vy:0,dir:1,grounded:true,kind:'normal',onLadder:null,cd:0.3,descents:0,rolled:null});}""")
         try:
             m.wait_for_function('players[1].hitTimer>0 || players[1].hits>0', timeout=4000); hit = True
@@ -106,24 +107,24 @@ try:
         time.sleep(2.2)
 
         # --- panel soal P2 (tamu membuka gerbang) tampil di master ---
-        g.evaluate("""()=>{const gt=Level.gates[0], q=players[1]; q.x=gt.cx-q.w/2; q.y=gt.y-q.h; q.vx=0; q.vy=0; q.onGround=true;}""")
-        time.sleep(0.8); g.keyboard.press('Enter')
-        h.wait_for_function('players[1].panel!==null', timeout=6000)
-        m.wait_for_function("players[1].panel!==null && players[1].panel.phase==='ask' && !!players[1].panel.q", timeout=6000)
-        check('master melihat soal P2 beserta pilihan jawaban', m.evaluate('players[1].panel.q.options.length') == 4, m.evaluate('players[1].panel.q.text'))
-        g.keyboard.press('ArrowRight'); time.sleep(0.9)
-        check('master melihat pilihan jawaban P2 bergerak', m.evaluate('players[1].panel.sel') == h.evaluate('players[1].panel.sel'), m.evaluate('players[1].panel.sel'))
-        target = h.evaluate('players[1].panel.q.correct'); sel = h.evaluate('players[1].panel.sel')
+        for _ in range(4):                            # arena bisa sedang miring (pemain meluncur) → ulangi bila belum terbuka
+            g.evaluate("""()=>{const gt=Level.gates[0], q=players[1]; q.x=gt.cx-q.w/2; q.y=gt.y-q.h; q.vx=0; q.vy=0; q.onGround=true; q.invuln=3;}""")
+            time.sleep(0.12); g.keyboard.press('Enter'); time.sleep(0.25)
+            if g.evaluate('players[1].panel!==null'): break
+        g.wait_for_function('players[1].panel!==null', timeout=3000)
+        m.wait_for_function('!!players[1].ghostAns', timeout=4000)
+        check('master melihat P2 sedang menjawab soal (penanda "MENJAWAB")', True)
+        target = g.evaluate('players[1].panel.q.correct'); sel = g.evaluate('players[1].panel.sel')
         if (target & 1) != (sel & 1): g.keyboard.press('ArrowLeft' if sel & 1 else 'ArrowRight')
         if (target >> 1) != (sel >> 1): g.keyboard.press('ArrowUp' if sel >> 1 else 'ArrowDown')
         time.sleep(0.6); g.keyboard.press('Enter')
-        m.wait_for_function('Level.gates[0].open[1]===true', timeout=6000)
+        m.wait_for_function('Level.gates[0].open[1]===true && players[1].score>0', timeout=6000)
         check('master melihat gerbang P2 terbuka & skor naik', m.evaluate('players[1].score') > 0 and m.evaluate('players[1].solved') >= 1, m.evaluate('players[1].score'))
 
         # --- master tidak bisa mengendalikan siapa pun ---
         before = (h.evaluate('players[1].x'), g.evaluate('players[1].x'))
         m.focus('#game'); m.keyboard.down('ArrowLeft'); m.keyboard.down('KeyA'); m.keyboard.press('Enter'); time.sleep(0.6); m.keyboard.up('ArrowLeft'); m.keyboard.up('KeyA')
-        check('tombol di master tidak dikirim ke host', h.evaluate('Online.remote.size') == 0)
+        check('tombol di master tidak mengendalikan siapa pun', m.evaluate('ACT.length') == 0 and m.evaluate('Online.held.size') == 0)
         after = (h.evaluate('players[1].x'), g.evaluate('players[1].x'))
         check('P2 tidak bergerak karena master', abs(after[0] - before[0]) < 3 and abs(after[1] - before[1]) < 3, (before, after))
 
@@ -141,13 +142,18 @@ try:
         h.wait_for_function('Online.mReady', timeout=20000)
         check('master baru langsung menonton pertandingan yang sedang berjalan', True)
         time.sleep(1.5)
-        r2, d2 = near(g, m2, 'players[1].x'); r1, d1 = near(h, m2, 'players[0].x')
+        r2, d2 = near(g, m2, 'players[1].x', tol=30); r1, d1 = near(h, m2, 'players[0].x', tol=30)    # arena miring: pemain meluncur → master tertinggal ±latensi
         check('posisi P1 & P2 di master baru cocok', r1 and r2, (d1, d2))
+        time.sleep(0.6)
         check('skor P2 sama dengan host', m2.evaluate('players[1].score') == h.evaluate('players[1].score'), m2.evaluate('players[1].score'))
+        hs, ms_ = h.evaluate('Online.seed'), m2.evaluate('Online.seed')
+        check('master baru memakai seed yang sama', hs and hs == ms_, (hs, ms_))
+        check('jam pertandingan master baru ≈ host (selisih < 1 dtk)', abs(m2.evaluate('Game.getElapsed()') - h.evaluate('Game.getElapsed()')) < 1.0, (round(m2.evaluate('Game.getElapsed()'), 2), round(h.evaluate('Game.getElapsed()'), 2)))
+        check('master baru: jumlah tong dunia acuan = host (±1)', abs(m2.evaluate('Barrels.spawned()') - h.evaluate('Barrels.spawned()')) <= 1, (m2.evaluate('Barrels.spawned()'), h.evaluate('Barrels.spawned()')))
         check('nama pemain tampil di master', m2.evaluate('players[0].name') == 'ANDI' and m2.evaluate('players[1].name') == 'BUDI', m2.evaluate('[players[0].name, players[1].name]'))
 
         # --- hasil pertandingan ---
-        h.evaluate("Game.net.set('playing', 0, 9999, 0)")
+        h.evaluate("(()=>{const f=Level.finish, q=players[0]; f.gate.open[0]=true; q.climbing=false; q.ladder=null; q.x=(f.x0+f.x1)/2-q.w/2; q.y=f.y-q.h; q.vx=0; q.vy=0; q.onGround=true; q.invuln=3;})()")
         for pg in (h, g, m2):
             pg.wait_for_function("Game.getState()==='result'", timeout=10000)
         check('hasil pertandingan tampil di host, tamu, dan master', True)

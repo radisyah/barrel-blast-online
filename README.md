@@ -1,34 +1,43 @@
 # BARREL BLAST · Online
 
-Versi online dari *BARREL BLAST* (Donkey Kong + soal matematika), 1 vs 1 dengan **kode ruangan**.
+Versi online dari *BARREL BLAST* (Donkey Kong + soal matematika), 1 vs 1 (balapan) dengan **kode ruangan**.
 Satu perangkat = satu pemain. Host = P1 (merah), tamu = P2 (biru). Mode lokal 2 pemain satu perangkat tetap ada.
 Ruangan juga punya satu kursi **Room Master**: penonton yang melihat P1 dan P2 bermain secara langsung (tanpa ikut bermain / mengontrol).
 
-## Cara kerja (latensi rendah)
-Model sinkronisasinya sama dengan *Number Bomber Online*: **gerak dihitung di perangkat pemain sendiri**, dunia bersama diputuskan host.
-- **Gerak pemain = lokal.** Tamu menjalankan fisika P2-nya sendiri (lompat, tangga, tilt), jadi tombol/joystick langsung terasa tanpa menunggu ping.
-  Posisi dikirim **30×/dtk** (paket ±70 B, tak andal) dan lawan digambar dengan interpolasi + ekstrapolasi singkat.
-- **Host memutuskan dunia bersama**: tong, api, boss, tabrakan, gerbang & soal, skor, garis akhir. Disiarkan sebagai snapshot **20×/dtk**
-  (tong/api diekstrapolasi dari kecepatannya di sisi tamu) + kejadian andal `hit` saat P2 tertabrak (tamu menerapkan lentingan di simulasi lokalnya).
-- **Soal tamu** dibuat di host; jawaban benar tidak dikirim ke tamu selama soal terbuka. Pilihan jawaban (panah / ketuk) tampil **instan** di tamu,
-  host tetap yang memutuskan benar/salah. Jam & hitung mundur dikoreksi dengan setengah ping.
-- Koneksi **langsung antar-perangkat** (WebRTC DataChannel, kanal `u` tak andal untuk posisi/snapshot, kanal `r` andal untuk kejadian). Server Vercel + Upstash Redis
-  hanya untuk membuat/gabung ruangan, bertukar SDP/ICE, dan **relay cadangan** bila koneksi langsung gagal. Badge di bawah layar: `LANGSUNG · xx MS` atau `RELAY`.
+## Cara kerja: "balapan dunia sendiri" (tanpa lag untuk P1 maupun P2)
+Sistem online-nya sama dengan *Kebun Angka / FloraBite*: **tiap perangkat menjalankan seluruh dunia permainan untuk pemainnya sendiri**,
+dengan **seed yang sama** dari host. Tidak ada satu pun aksi pemain yang menunggu jaringan.
+
+- **Dunia lokal.** Tong, boss, api, gerbang, soal, koin, palu, tabrakan, kombo, dan skor dihitung di perangkat pemain itu sendiri.
+  Tombol, lompat, terkena tong, dan jawab soal terasa **instan** (terukur ±20 ms walau ping buatan 200 ms), baik untuk P1 (host) maupun P2 (tamu).
+  Sebelumnya P2 harus menunggu host untuk tong/tabrakan/soal; itu sumber lag yang dirasakan P2 dan sudah dihapus.
+- **Seed sama = gelombang sama.** Host membuat satu seed tiap ronde dan mengirimnya di pesan `go`. Dari seed itu: rangkaian acak tong tangga & api (`Rnd`),
+  dan urutan soal matematika (`Quiz.setRng`). Soal ke-N yang dibuka kedua pemain identik; jam boss/tong sama. Hitung mundur dikoreksi setengah ping agar "GO!" bersamaan.
+- **Lawan = bayangan.** Posisi lawan dikirim 30×/dtk (paket ±85 B, tak andal) lalu digambar dengan interpolasi + ekstrapolasi singkat; ringkasan skor/kombo/efek/gerbang
+  terbuka 8×/dtk (±140 B). Bayangan digambar sedikit tembus pandang, **tidak menabrak tong, tidak mengambil koin/palu, dan tidak mengganggu** dunia siapa pun.
+  Penanda "MENJAWAB..." muncul di atas bayangan yang sedang membuka soal. Soal lawan tidak ditampilkan.
+- **Pemenang diputuskan host (sekali, di akhir).** Tiap pemain yang selesai (garis akhir / waktu habis) mengirim `done` (andal) berisi waktu & statistiknya, dunianya dibekukan
+  dengan tulisan "MENUNGGU LAWAN...", lalu host mengirim `end`:
+  - tiba di garis akhir lebih dulu menang (waktu tiba dibandingkan; selisih <20 ms = tiba bersamaan → skor tertinggi);
+  - waktu habis = skor tertinggi menang, seri bila sama;
+  - host menunggu ±setengah ping untuk pesan tiba lawan yang mungkin lebih awal; bila lawan tak kunjung selesai (>6 dtk setelah host selesai) dipakai skor terakhirnya.
+- Koneksi **langsung antar-perangkat** (WebRTC DataChannel, kanal `u` tak andal untuk posisi/skor, kanal `r` andal untuk `go`/`done`/`end`). Server Vercel + Upstash Redis
+  hanya untuk membuat/gabung ruangan, bertukar SDP/ICE, dan **relay cadangan**. Badge di bawah layar: `LANGSUNG · xx MS` atau `RELAY`.
+  `api/room.js` tidak berubah: perubahan sistem online ada seluruhnya di `public/index.html` (`Online`, `Rnd`, `ACT`).
+
+Akibat desain ini (sama seperti Kebun Angka): kedua pemain **berlomba**, bukan saling mengganggu: tong dan koin masing-masing terpisah, dan tidak ada ketergantungan
+antar-pemain di tengah ronde. Bila satu pemain koneksinya buruk, yang terdampak hanya gerak bayangannya di layar lawan, bukan permainan siapa pun.
 
 ## Room Master (penonton)
 - **Hanya satu** master per ruangan (kursi terpisah dari P2; master kedua ditolak 409). Master tersambung **hanya ke host** (WebRTC kedua, relay cadangan sama seperti tamu);
-  tamu tidak tahu ada master dan latensi P1↔P2 tidak berubah.
-- Host menyiarkan ke master: kejadian andal `go` / `end` / `pq` (soal), **snapshot dunia yang sama** dengan tamu, posisi P1 (milik host) dan posisi P2 (diteruskan dari tamu),
-  plus efek/suara P2 yang dimainkan tamu sendiri. Master menyimulasikan **tidak ada apa pun**: hanya menggambar dengan interpolasi yang sama seperti tamu.
-- Master yang masuk di tengah pertandingan langsung menerima `go` + snapshot penuh + soal yang sedang terbuka, jadi langsung bisa menonton.
-- Master tidak mengirim input: tombol/joystick dimatikan, tidak ada "Main Lagi" (host yang memulai ronde baru; master ikut otomatis).
+  tamu tidak tahu ada master dan tidak ada beban tambahan untuk P1↔P2.
+- Host meneruskan ke master: `go` (seed + pengaturan), posisi P1 (milik host) dan P2 (diteruskan dari tamu), ringkasan skor kedua pemain, dan `end`.
+- Karena dunia tiap pemain terpisah, master menjalankan **dunia acuan** dari seed yang sama (tanpa pemain): tong & boss yang ia lihat sama jamnya dengan yang dihadapi pemain,
+  hanya efek yang bergantung pada tindakan pemain (palu menghancurkan tong, hukuman tong tangga karena jawaban salah, api yang mengejar pemain) yang tidak identik. Layar menampilkan catatan
+  "TONG & BOSS = SEED SAMA DENGAN PEMAIN". Master melihat kedua bayangan, skor, kombo, gerbang terbuka, dan penanda "MENJAWAB..." (bukan teks soal).
+- Master yang masuk di tengah pertandingan menerima seed + jam berjalan lalu memajukan dunia acuannya secepatnya (tanpa suara), jadi langsung sinkron.
+- Master tidak mengirim input; tidak ada "Main Lagi" (host yang memulai ronde baru; master ikut otomatis).
 - Host keluar atau koneksi host–tamu putus = ruangan ditutup, master kembali ke menu.
-
-## Sinkronisasi dunia: snapshot kecil (<2 KB penuh, biasanya 200–900 B)
-Snapshot host → tamu dibuat kecil agar tidak terfragmentasi di jaringan seluler dan tidak membuat antrean kirim yang menaikkan ping:
-pemain dikirim sebagai **delta** (hanya field yang berubah; snapshot penuh tiap ±1 dtk), tong/api sebagai larik angka bulat (hanya yang aktif),
-gerbang/collectible/palu/skor hanya saat berubah, dan teks soal + pilihan jawaban sekali lewat kanal andal (`pq`). Laju snapshot 15×/dtk.
-Terukur (loopback, 2 browser): bandwidth host→tamu 41–69 KB/s → 8–12 KB/s.
 
 ## Kontrol
 - **HP (landscape, online)**: joystick di **kiri**; **LOMPAT** dan **SOAL** di **kanan** (SOAL = buka gerbang soal / jawab). Ketuk pilihan jawaban di panel soal juga bisa.
@@ -51,12 +60,13 @@ Terukur (loopback, 2 browser): bandwidth host→tamu 41–69 KB/s → 8–12 KB/
 ```bash
 node dev-server.js     # http://localhost:3000 (penyimpanan memori)
 npm test               # tes API pensinyalan
-python3 test/e2e_master.py   # 3-4 browser: host + tamu + Room Master (nonton P1/P2, soal, tabrakan, masuk/keluar di tengah main, hasil)
-python3 test/e2e.py    # 2 browser sungguhan lewat WebRTC dengan ping buatan (default 60 ms/arah ≈ 120 ms);
+python3 test/e2e_master.py   # 3-4 browser: host + tamu + Room Master (nonton bayangan P1/P2, skor, masuk/keluar di tengah main, hasil)
+python3 test/e2e.py    # 2 browser sungguhan lewat WebRTC dengan ping buatan (default 100 ms/arah ≈ 200 ms): seed sama, respons lokal, bayangan, pemenang;
                        # args: [folder] [delay_ms] [persen_paket_hilang]  (pip install playwright && playwright install chromium)
 ```
 
 ## Batasan
-- Host dipercaya untuk tabrakan/skor; posisi tiap pemain dipercaya dari perangkatnya (cukup untuk duel antar-teman, bukan anti-cheat).
-- Karena gerak tamu lokal, tabrakan tong/api dinilai host dengan posisi tamu yang tertunda ±setengah ping: lentingan tiba beberapa puluh ms setelah tong terlihat mengenai.
+- Skor dihitung di perangkat pemain masing-masing (seperti Kebun Angka): cocok untuk duel antar-teman/kelas, bukan turnamen berhadiah (tidak anti-curang).
+- Tidak ada interaksi antar-pemain di dalam ronde (tidak saling menabrak, tidak berebut koin): ini justru yang menghilangkan lag.
+- Jam tiap pemain berjalan di perangkatnya; tab yang disembunyikan menghentikan permainan pemain itu (host menunggu ≤6 dtk setelah ia sendiri selesai, lalu memakai skor terakhir lawan).
 - Tidak ada sambung-ulang di tengah pertandingan: bila koneksi putus, kedua pemain kembali ke menu.
