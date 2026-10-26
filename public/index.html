@@ -2605,6 +2605,7 @@ class NetSession {
       this.ready = true;
       clearInterval(this.pingTimer); clearInterval(this.watchTimer);
       this.pingTimer = setInterval(() => this.send('u', { t: 'pi', ts: performance.now() }), 1000);
+      this.routeTimer = setInterval(() => this.probeRoute(), 3000); this.probeRoute();
       this.watchTimer = setInterval(() => {
         if (this.stopped || !this.ready) return;
         if (performance.now() - this.lastRx > 8000) this.close('Koneksi ke lawan terputus.');
@@ -2612,6 +2613,18 @@ class NetSession {
       if (this.h.onReady) this.h.onReady(this.mode);
     }
     this.status();
+  }
+  /* Jenis jalur terpilih: 'relay' = lewat server TURN (lebih lambat dari langsung), selain itu langsung antar-perangkat. */
+  async probeRoute() {
+    try {
+      if (!this.pc || !this.p2p) return;
+      const st = await this.pc.getStats(); let pair = null;
+      st.forEach((r) => { if (r.type === 'transport' && r.selectedCandidatePairId) pair = st.get(r.selectedCandidatePairId); });
+      if (!pair) st.forEach((r) => { if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') pair = r; });
+      const loc = pair && st.get(pair.localCandidateId), rem = pair && st.get(pair.remoteCandidateId);
+      const t = loc && rem ? ((loc.candidateType === 'relay' || rem.candidateType === 'relay') ? 'relay' : 'direct') : '';
+      if (t && t !== this.route) { this.route = t; this.status(); }
+    } catch (e) { /* abaikan */ }
   }
   status() { if (this.h.onStatus) this.h.onStatus(this.mode, this.rtt); }
 
@@ -2621,6 +2634,9 @@ class NetSession {
     const s = JSON.stringify(obj);
     if (this.p2p) {
       const c = ch === 'u' ? this.chU : this.chR;
+      /* Backpressure: bila antrean kirim kanal tak-andal menumpuk (uplink/TURN lambat), JANGAN menambah antrean — data posisi/snapshot
+         yang menunggu sudah basi. Tanpa ini antrean membengkak dan semua pesan tiba berdetik-detik terlambat (bufferbloat). Ping tetap dikirim. */
+      if (ch === 'u' && c && c.bufferedAmount > 8192 && obj.t !== 'pi' && obj.t !== 'po') { this.dropped = (this.dropped || 0) + 1; return true; }
       if (c && c.readyState === 'open') { try { c.send(s); return true; } catch (e) { /* jatuh ke relay */ } }
     }
     if (this.relay) {
@@ -2680,7 +2696,7 @@ class NetSession {
   teardown() {
     this.closed = true; this.stopped = true; this.ready = false;
     clearTimeout(this.pollTimer); clearTimeout(this.flushTimer); clearTimeout(this.sigTimer); clearTimeout(this.relayTimer);
-    clearInterval(this.pingTimer); clearInterval(this.watchTimer);
+    clearInterval(this.pingTimer); clearInterval(this.watchTimer); clearInterval(this.routeTimer);
     [this.chR, this.chU].forEach((c) => { try { if (c) { c.onmessage = c.onopen = c.onclose = null; c.close(); } } catch (e) { /* abaikan */ } });
     try { if (this.pc) { this.pc.onicecandidate = this.pc.onconnectionstatechange = null; this.pc.close(); } } catch (e) { /* abaikan */ }
     this.pc = this.chR = this.chU = null; this.p2p = false; this.relay = false;
@@ -2927,7 +2943,8 @@ const Online = (() => {
     $('l-status').textContent = msg; $('l-status').className = cls;
   }
   function ping(mode, rtt) {
-    const b = $('ping'); b.textContent = (mode === 'p2p' ? 'LANGSUNG' : mode === 'relay' ? 'RELAY' : '...') + ' - ' + Math.round(rtt || 0) + ' MS';
+    const b = $('ping'); const nt = O.net, drop = nt && nt.dropped ? ' · BUF ' + nt.dropped : '';
+    b.textContent = (mode === 'p2p' ? (nt && nt.route === 'relay' ? 'TURN' : 'LANGSUNG') : mode === 'relay' ? 'RELAY' : '...') + ' - ' + Math.round(rtt || 0) + ' MS' + drop;
     b.style.color = mode === 'relay' || rtt > 180 ? '#ff6b6b' : rtt > 90 ? '#ffd23f' : '#7dff7a';
   }
   function mk() {
