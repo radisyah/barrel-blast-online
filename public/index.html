@@ -7,6 +7,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0b0b1a">
+<link rel="manifest" href="manifest.webmanifest">
 <title>BARREL BLAST — Retro Math Rivalry</title>
 <style>
   :root { --pad-h: clamp(128px, 34vh, 210px); }
@@ -26,14 +27,11 @@
     background: #14142b;
     outline: none;
   }
-  /* Tombol utilitas (jeda, suara, layar penuh) di tepi bawah arena */
-  #util { display: none; position: absolute; left: 50%; bottom: 3px; transform: translateX(-50%); gap: 6px; z-index: 5; }
+  /* Tombol utilitas (jeda, suara, layar penuh): kecil & transparan di tepi kanan-tengah, di atas arena (arena memenuhi layar) */
+  #util { display: none; position: absolute; right: max(6px, env(safe-area-inset-right)); top: 50%; transform: translateY(-50%);
+    flex-direction: column; gap: 6px; z-index: 5; opacity: .6; }
   body.touch #util { display: flex; }
-  /* Layar lebar (HP mendatar): tombol pindah ke bar hitam kanan (di luar arena 4:3), tersusun ke bawah, agar tidak menutupi game */
-  @media (min-aspect-ratio: 19/10) {
-    #util { left: auto; bottom: auto; top: 10px; transform: none; flex-direction: column; gap: 8px;
-      right: calc((100vw - 163.93vh) / 4 - 19px); }
-    #util .ub { height: 34px; }
+  #util .ub { height: 34px; }
   }
   #util .ub {
     width: 38px; height: 30px; padding: 0; border: 2px solid #ffd23f; border-radius: 6px;
@@ -95,8 +93,8 @@
     justify-content: space-between; gap: 0;
   }
   body.online #pad .cluster[data-player="0"] .acts { flex-direction: column-reverse; align-items: flex-end; gap: 12px; padding-bottom: 6px; }
-  body.online #pad .tb { --bs: clamp(56px, min(20vh, calc((100vw - 163.93vh) / 2 - 18px)), 88px); font-size: 13px; opacity: .75; }
-  body.online #pad .joy { --s: clamp(80px, min(30vh, calc((100vw - 163.93vh) / 2 - 18px)), 144px); }
+  body.online #pad .tb { --bs: clamp(52px, min(20vh, calc((100vw - 216.22vh) / 2 - 18px)), 88px); font-size: 13px; opacity: .75; }
+  body.online #pad .joy { --s: clamp(76px, min(30vh, calc((100vw - 216.22vh) / 2 - 18px)), 144px); }
   body.online.guest #pad .cluster[data-player="0"] { --c: #4da6ff; }
   #lobby { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: rgba(8,8,24,.86); }
   #lobby.hidden, #ping.hidden, .hidden { display: none !important; }
@@ -117,7 +115,7 @@
   .lcard .or { margin: 8px 0 2px; color: #9aa; font-size: 12px; }
   #l-codebig { font-size: 40px; letter-spacing: 8px; color: #7dff7a; margin: 6px 0; }
   #l-status { min-height: 36px; margin: 8px 0; color: #ffd23f; } #l-status.ok { color: #7dff7a; } #l-status.bad { color: #ff6b6b; }
-  #ping { position: fixed; left: calc(50% + 72px); bottom: max(4px, env(safe-area-inset-bottom)); z-index: 6; padding: 2px 6px;
+  #ping { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(4px, env(safe-area-inset-bottom)); z-index: 6; padding: 2px 6px;
     font: bold 11px "Courier New", monospace; color: #7dff7a; background: rgba(11,11,26,.7); border-radius: 4px; pointer-events: none; }
   #toast { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 40; max-width: 90vw; padding: 8px 14px; display: none;
     font: bold 13px "Courier New", monospace; color: #fff; background: #b02a2a; border: 2px solid #ffd23f; border-radius: 6px; }
@@ -126,7 +124,7 @@
 </head>
 <body>
 <div id="stage">
-  <canvas id="game" width="1600" height="976" tabindex="0"></canvas>
+  <canvas id="game" width="1600" height="740" tabindex="0"></canvas>
   <div id="util">
     <button class="ub" data-act="pause" aria-label="Jeda">II</button>
     <button class="ub" data-act="mute" aria-label="Suara">&#9835;</button>
@@ -188,7 +186,7 @@
 
 /* ---------------------------- CONFIG ---------------------------- */
 const CONFIG = {
-  W: 1600, H: 740, TOP: 236, FLOOR: 700,   // TOP = strip khusus panel soal di atas arena (kanvas total 1600x976, strip dibuat ringkas agar arena tampil besar di HP)
+  W: 1600, H: 740, TOP: 0, FLOOR: 700,   // TOP = 0: tidak ada strip soal lagi; arena memenuhi seluruh kanvas (1600x740) dan panel soal tampil di tengah arena
    // arena panjang (~2,16:1, bukan 4:3): lantai + 6 tingkat platform
   STEP: 1 / 120,            // fixed timestep fisika (detik)
   MAX_FRAME: 0.1,           // batas dt per frame agar tidak spiral
@@ -850,14 +848,17 @@ const KEYMAP = [
   });
   /* Layar penuh otomatis pada ketukan pertama (butuh gerakan pengguna) + kunci mendatar bila didukung.
      iPhone Safari tidak punya API layar penuh: gunakan "Tambah ke Layar Utama" (meta di atas membuatnya penuh). */
-  let fsTried = false;
-  window.addEventListener('pointerup', e => {
-    if (fsTried || e.pointerType !== 'touch') return;
-    fsTried = true;
+  let fsTries = 0;
+  const isFs = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+  const tryFs = () => {
     const fn = de.requestFullscreen || de.webkitRequestFullscreen;
-    if (!fn || document.fullscreenElement || document.webkitFullscreenElement) return;
+    if (!fn || isFs()) return;
     const lock = () => { try { if (typeof screen !== 'undefined' && screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {}); } catch (_) {} };
-    try { const r = fn.call(de); if (r && r.then) r.then(lock, () => {}); else lock(); } catch (_) {}
+    try { const r = fn.call(de, { navigationUI: 'hide' }); if (r && r.then) r.then(lock, () => {}); else lock(); } catch (_) {}
+  };
+  window.addEventListener('pointerup', e => {
+    if (e.pointerType !== 'touch' || fsTries >= 4 || isFs()) return;
+    fsTries++; tryFs();
   }, { passive: true });
   syncMute(); if (typeof setInterval === 'function' && mute) setInterval(syncMute, 500);
   const rot = document.getElementById('rot');
@@ -1982,12 +1983,14 @@ const Gates = (() => {
     }
   }
 
-  /* Tata letak panel: STATIS. Merah (P1) di pojok kiri atas, biru (P2) di pojok kanan atas, tidak bergantung posisi pemain. */
+  /* Tata letak panel: di TENGAH arena. Online: pemain hanya melihat soalnya sendiri (satu panel di tengah).
+     Room Master & mode lokal 1 perangkat: kedua panel berdampingan di tengah (P1 kiri, P2 kanan). */
   const K = 1.2;                                  // panel diperbesar agar mudah dibaca & diketuk di HP
+  function bothShown() { return !Online.on || Online.master; }
   function panelRect(p) {
-    const w = PW * K, h = PH * K, m = 14;
-    const x = p.index === 0 ? m : CONFIG.W - m - w;
-    const y = Math.round((CONFIG.TOP - h) / 2);    // koordinat LAYAR (di dalam strip TOP), bukan koordinat arena
+    const w = PW * K, h = PH * K, gap = 16;
+    const x = bothShown() ? (p.index === 0 ? CONFIG.W / 2 - gap / 2 - w : CONFIG.W / 2 + gap / 2) : Math.round((CONFIG.W - w) / 2);
+    const y = Math.round((CONFIG.H - h) / 2);     // koordinat layar = koordinat arena (tidak ada strip)
     return { x, y, w, h };
   }
   function optionRect(r, i) {                      // r bisa berukuran desain (k=1) atau layar (k=K)
@@ -3571,7 +3574,7 @@ const Game = (() => {
     const r = { x: 0, y: 0, w: 440, h: 186 };       // gambar dalam koordinat desain, lalu diskalakan
     ctx.save();
     ctx.translate(sr.x, sr.y); ctx.scale(k, k);
-    ctx.globalAlpha = 0.93;
+    ctx.globalAlpha = 0.9;
     ctx.fillStyle = '#0b0b1a';
     ctx.fillRect(r.x, r.y, r.w, r.h);
     ctx.globalAlpha = 1;
@@ -3600,13 +3603,14 @@ const Game = (() => {
       text(pn.fb.title, r.x + r.w / 2, r.y + 102, 30, pn.fb.ok ? '#7dff7a' : '#ff6b6b', 'center');
       textFit(pn.fb.detail, r.x + r.w / 2, r.y + 138, r.w - 24, 18, '#fff', 'center');
     } else {
-      const hint = document.body.classList.contains('touch') ? 'KETUK JAWABAN  LOMPAT:BATAL' : p.index === 0 ? 'WASD:PILIH E:OK SPACE:BATAL' : 'PANAH:PILIH ENTER:OK SHIFT:BATAL';
+      const hint = Online.master ? 'ROOM MASTER - MENONTON' : document.body.classList.contains('touch') ? 'KETUK JAWABAN  LOMPAT:BATAL' : p.index === 0 ? 'WASD:PILIH E:OK SPACE:BATAL' : 'PANAH:PILIH ENTER:OK SHIFT:BATAL';
       textS(hint, r.x + r.w / 2, r.y + r.h - 12, 2, '#9aa', 'center');
     }
     ctx.restore();
   }
 
-  function drawPanels() { for (const p of players) drawPanel(p); }
+  /* Online: hanya soal milik sendiri yang digambar (soal lawan disembunyikan). Room Master melihat keduanya. */
+  function drawPanels() { for (const p of players) { if (Online.on && !Online.master && p.index !== Online.me) continue; drawPanel(p); } }
 
   /* Putri pixel-art (16x21 -> 2x, berkontur): 2 pose melambai x (tenang | ketakutan saat boss mengamuk).
      Dibuat sekali lalu di-blit; dilengkapi aura, kilau, gelembung ucapan, tetes keringat, dan hati saat jalan terbuka. */
@@ -4032,23 +4036,10 @@ const Game = (() => {
     if (state === 'result') { ctx.save(); ctx.translate(UI_OFFX, UI_OFF); drawResult(); ctx.restore(); drawParticles(); }
   }
 
-  /* Strip soal: di atas arena, tidak menutupi permainan. P1 (merah) kiri, P2 (biru) kanan. */
+  /* Panel soal digambar di atas arena (tengah layar), tanpa strip/kotak placeholder. */
   function drawPanelStrip() {
-    if (state === 'menu' || state === 'controls') return;
-    ctx.fillStyle = '#0b0b1a'; ctx.fillRect(0, 0, CONFIG.W, CONFIG.TOP);
-    ctx.fillStyle = '#ffd23f'; ctx.fillRect(0, CONFIG.TOP - 3, CONFIG.W, 3);
-    for (const p of players) {
-      const r = Gates.panelRect(p);
-      if (!p.panel) {
-        ctx.globalAlpha = 0.35; ctx.strokeStyle = p.color; ctx.lineWidth = 2;
-        ctx.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
-        const mine = !Online.on || p.index === Online.me, touch = document.body.classList.contains('touch');
-        textS(p.name + (Online.on && !Online.master ? (mine ? ' SOAL SAYA' : ' SOAL LAWAN') : ' SOAL'), r.x + r.w / 2, r.y + r.h / 2 - 12, 4, p.color, 'center');
-        if (mine) textS(touch ? 'KETUK TOMBOL SOAL DI GERBANG' : (p.index === 0 ? 'TEKAN E DI GERBANG' : 'TEKAN ENTER DI GERBANG'), r.x + r.w / 2, r.y + r.h / 2 + 22, 2, '#9aa', 'center');
-        ctx.globalAlpha = 1;
-      }
-    }
-    if (state !== 'result') drawPanels();
+    if (state === 'menu' || state === 'controls' || state === 'result') return;
+    drawPanels();
   }
 
   function render() {
