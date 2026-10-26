@@ -1,0 +1,13 @@
+{
+  "name": "barrel-blast-online",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BARREL BLAST Online. Duel platformer + matematika 2 pemain; host menjalankan simulasi, pensinyalan WebRTC di Vercel + Upstash Redis.",
+  "scripts": {
+    "dev": "node dev-server.js",
+    "test": "node test/api.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
