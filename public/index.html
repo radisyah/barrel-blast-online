@@ -109,12 +109,11 @@
   .lcard button.alt { background: #ffd23f; } .lcard button.dim { background: #333; color: #aaa; }
   .lcard button.master { background: #c28cff; }
   .lcard button:disabled { opacity: .4; }
-  #l-mstatus { margin: 2px 0 8px; font-size: 12px; color: #9aa; } #l-mstatus.ok { color: #c28cff; }
-  /* Room Master hanya menonton: tidak ada kontrol sentuh */
+  /* Room Master = penonton + wasit: tidak ada kontrol sentuh */
   body.master #pad { display: none !important; }
   .lcard .or { margin: 8px 0 2px; color: #9aa; font-size: 12px; }
   #l-codebig { font-size: 40px; letter-spacing: 8px; color: #7dff7a; margin: 6px 0; }
-  #l-status { min-height: 36px; margin: 8px 0; color: #ffd23f; } #l-status.ok { color: #7dff7a; } #l-status.bad { color: #ff6b6b; }
+  #l-status { min-height: 36px; margin: 8px 0; color: #ffd23f; white-space: pre-line; font-size: 13px; } #l-status.ok { color: #7dff7a; } #l-status.bad { color: #ff6b6b; }
   #ping { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(4px, env(safe-area-inset-bottom)); z-index: 6; padding: 2px 6px;
     font: bold 11px "Courier New", monospace; color: #7dff7a; background: rgba(11,11,26,.7); border-radius: 4px; pointer-events: none; }
   #toast { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 40; max-width: 90vw; padding: 8px 14px; display: none;
@@ -155,17 +154,16 @@
   <h2>MAIN ONLINE</h2>
   <div id="l-home">
     <input id="l-name" maxlength="14" placeholder="NAMA KAMU" autocomplete="off">
-    <button id="l-create">BUAT RUANGAN</button>
-    <div class="or">&mdash; ATAU GABUNG &mdash;</div>
+    <button id="l-create" class="master">BUAT RUANGAN (JADI ROOM MASTER)</button>
+    <div class="or">Room Master = perangkat dengan jaringan tercepat. Dunia permainan berjalan di sini; P1 &amp; P2 bermain di dalamnya.</div>
+    <div class="or">&mdash; ATAU GABUNG SEBAGAI PEMAIN &mdash;</div>
     <input id="l-code" maxlength="5" placeholder="KODE 5 HURUF" autocomplete="off">
-    <button id="l-join" class="alt">GABUNG SEBAGAI PEMAIN 2</button>
-    <button id="l-watch" class="master">GABUNG SEBAGAI ROOM MASTER (NONTON)</button>
+    <button id="l-join" class="alt">GABUNG (PEMAIN 1 / PEMAIN 2)</button>
   </div>
   <div id="l-room" class="hidden">
     <div>KODE RUANGAN</div><div id="l-codebig">-----</div>
     <button id="l-copy" class="alt">SALIN TAUTAN UNDANGAN</button>
     <div id="l-status"></div>
-    <div id="l-mstatus" class="hidden"></div>
     <button id="l-start" disabled>MULAI PERTANDINGAN</button>
   </div>
   <button id="l-back" class="dim">KEMBALI</button>
@@ -650,12 +648,13 @@ const FX = (() => {
   function reset() { for (const q of P) q.a = false; shakeT = 0; flashT = 0; }
 
   function event(name, x, y, color) {
+    Online.emit(name, x, y, color);                    // Room Master: teruskan ke pemain (efek, suara, percikan)
     switch (name) {
       case 'jump':        SFX.play('jump'); dust(x, y, 4, 0.7); break;
       case 'land':        SFX.play('land'); dust(x, y, 6, 1.1); break;
       case 'coin':        SFX.play('coin'); burst(x, y, 7, ['#ffd23f', '#fff3b0', '#ffffff'], 90, 0.45, 220, 2); break;
       case 'gem':         SFX.play('gem'); burst(x, y, 16, ['#ff5de0', '#ffd1f6', '#ffffff', '#6ef2ff'], 150, 0.65, 250, 2); break;
-      case 'hit':         SFX.play('hit'); burst(x, y, 18, ['#ff4d4d', '#ff8a3d', '#ffd23f', '#ffffff'], 200, 0.6, 420, 3); shake(0.3, 5); flash('#ff4d4d', 0.14); vibrate(45); break;
+      case 'hit':         SFX.play('hit'); burst(x, y, 18, ['#ff4d4d', '#ff8a3d', '#ffd23f', '#ffffff'], 200, 0.6, 420, 3); if (!Online.master) { shake(0.3, 5); flash('#ff4d4d', 0.14); vibrate(45); } break;
       case 'barrelBreak': burst(x, y, 12, ['#8b5a2b', '#5a3515', '#c28a4a'], 150, 0.7, 520, 3); break;
       case 'shieldBlock': SFX.play('shieldBlock'); burst(x, y, 14, ['#6ef2ff', '#ffffff', '#9ad8ff'], 170, 0.5, 120, 2); break;
       case 'gateOpen':    SFX.play('correct'); burst(x, y, 24, [color || '#7dff7a', '#ffd23f', '#ffffff'], 180, 0.85, 200, 3); break;
@@ -991,10 +990,10 @@ function createPlayer(index) {
 
 const players = [createPlayer(0), createPlayer(1)];
 
-/* Pemain yang BERINTERAKSI dengan dunia lokal (tong, api, koin, palu, gerbang, garis akhir).
-   Lokal 1 perangkat: keduanya. Online: hanya pemain milik perangkat ini (lawan = bayangan tanpa tabrakan); Room Master: tidak ada. */
+/* Pemain yang BERINTERAKSI dengan dunia (tong, api, koin, palu, gerbang, garis akhir).
+   Lokal 1 perangkat & Room Master (dunia online tunggal): keduanya. Pemain online: hanya dirinya sendiri (dunia dijalankan Room Master). */
 let ACT = players;
-function setActors() { ACT = !Online.on ? players : Online.master ? [] : [players[Online.me]]; }
+function setActors() { ACT = !Online.on || Online.master ? players : [players[Online.me]]; }
 
 /* RNG berbenih (mulberry32): online, host mengirim satu seed sehingga SEMUA perangkat memakai rangkaian acak yang sama
    untuk dunia (tong tangga, api) dan soal matematika → gelombang & urutan soal identik, tanpa sinkronisasi jaringan. */
@@ -1178,6 +1177,7 @@ const Physics = {
   hitPlayer(p, b) {
     if (p.invuln > 0) return;                                     // kebal sesaat; pemain yang sedang menjawab soal tetap bisa terkena
     if (p.panel) Gates.interrupt(p);                              // panel soal ditutup paksa, lalu pemain tetap dilempar ke tingkat bawah
+    Online.cur = p.index;                                         // Room Master: efek 'hit' ini milik pemain p
     p.hits++;
     p.streak = 0; p.comboT = 0;                                   // terkena rintangan memecah kombo
     FX.event('hit', p.x + p.w / 2, p.y + p.h / 2);
@@ -1207,6 +1207,8 @@ const Physics = {
       p.vy = -CONFIG.KNOCK_Y;
       p.onGround = false;
     }
+    Online.cur = -1;
+    if (Online.on && Online.master) Online.sendHit(p);            // pemain menerapkan lemparan ini seketika di perangkatnya
   },
 
   /* Tingkat tepat di bawah tingkat yang sedang dipijak (atau akan dipijak bila sedang melayang). */
@@ -1301,7 +1303,7 @@ const Barrels = (() => {
       b.vx = 0; b.vy = 0; b.dir = 1; b.angle = 0; b.grounded = true;
       b.kind = kind || 'normal'; b.onLadder = null; b.cd = 0.3; b.descents = 0; b.rolled = null; b.jmp[0] = b.jmp[1] = false;
       spawnedCount++;
-      if (b.kind !== 'normal') SFX.play('throw');
+      if (b.kind !== 'normal') { SFX.play('throw'); Online.emit('throw', 0, 0); }
       return true;
     }
     return false;                                    // pool penuh
@@ -1406,7 +1408,7 @@ const Barrels = (() => {
     }
   }
 
-  return { pool, reset, update, spawn, spawned: () => spawnedCount, timer: () => spawnTimer };
+  return { pool, reset, update, spawn, spawned: () => spawnedCount, timer: () => spawnTimer, setTimer: v => { spawnTimer = v; } };
 })();
 
 /* ---------------------------- BOSS & API (rintangan ala Donkey Kong) ---------------------------- */
@@ -1930,6 +1932,7 @@ const Gates = (() => {
     if (!pn || pn.phase !== 'ask') return;
     const q = pn.q, g = pn.gate;
     pn.chosen = idx;
+    Online.cur = p.index;
     if (idx === q.correct) {
       p.streak++; p.solved++; p.comboT = CONFIG.COMBO_TIME;
       const frac = Math.max(0, pn.timeLeft / pn.total);
@@ -1953,6 +1956,7 @@ const Gates = (() => {
       pn.fbTimer = FB_BAD;
     }
     pn.phase = 'feedback';
+    Online.cur = -1;
   }
 
   /* Terkena tong/api saat panel terbuka: panel ditutup tanpa penalti jawaban (jeda singkat bila belum dijawab). */
@@ -2043,8 +2047,11 @@ const Score = (() => {
     p.pts[type] += pts;
     if (type === 'math') p.bonus += pts;
     popup(x, y, '+' + pts, p.accent);
+    Online.emit('pop', x, y, '+' + pts, p.index);
+    Online.cur = p.index;
     if (type === 'coin') FX.event('coin', x, y);
     else if (type === 'gem') FX.event('gem', x, y);
+    Online.cur = -1;
     return true;
   }
   const mult = p => Math.min(CONFIG.COMBO_MAX, 1 + p.streak);   // pengali koin/gem dari kombo jawaban benar
@@ -2059,7 +2066,7 @@ const Score = (() => {
     }
   }
   function reset() { for (const q of pool) q.active = false; next = 0; }
-  return { award, update, reset, pool, mult };
+  return { award, update, reset, pool, mult, popup };
 })();
 
 const Collectibles = (() => {
@@ -2111,7 +2118,7 @@ const Hammers = (() => {
         const cx = p.x + p.w / 2, feet = p.y + p.h;
         if (Math.abs(cx - h.x) < 16 && Math.abs(feet - h.support) < 10) {
           p.hammer = CONFIG.HAMMER_TIME; h.active = false; h.respawn = CONFIG.HAMMER_RESPAWN;
-          FX.event('boost', cx, p.y + p.h / 2);
+          Online.cur = p.index; FX.event('boost', cx, p.y + p.h / 2); Online.cur = -1;
           break;
         }
       }
@@ -2453,12 +2460,13 @@ const Sprites = (() => {
   return S;
 })();
 
-/* ---------------------------- ONLINE (tiap perangkat menjalankan dunianya sendiri dengan seed yang sama; lawan = bayangan) ---------------------------- */
+/* ---------------------------- ONLINE (satu dunia di Room Master; P1 & P2 bermain di dalamnya) ---------------------------- */
 /* =====================================================================
    NetSession — koneksi antar-pemain.
    Utama : WebRTC DataChannel langsung antar-perangkat (tanpa server di tengah → latensi serendah mungkin).
            Dua kanal: 'r' (andal & berurutan: kejadian penting) dan 'u' (tak andal, tanpa antrean: posisi & snapshot).
    Cadangan: bila koneksi langsung tidak jadi dalam ±9 dtk, semua pesan dititipkan lewat /api/room (relay, lebih lambat).
+   Topologi BINTANG: Room Master memegang satu NetSession per pemain; pemain hanya punya satu NetSession (ke Room Master).
    Server (Vercel + Redis) hanya dipakai untuk membuat/gabung ruangan, bertukar SDP/ICE, dan relay cadangan.
    ===================================================================== */
 class NetSession {
@@ -2497,16 +2505,18 @@ class NetSession {
   }
 
   /* ---------- ruangan ---------- */
+  /** Room Master: buat ruangan; sesi ini = kanal ke Pemain 1 (peerRole '1'). */
   async create(name) {
     const j = await this.call('POST', { action: 'create', name: name });
-    this.role = 'h'; this.peerRole = 'g'; this.code = j.code; this.token = j.token; this.name = j.name; this.begin(); return j;
+    this.role = 'h'; this.peerRole = '1'; this.code = j.code; this.token = j.token; this.name = j.name; this.begin(); return j;
   }
-  /** Host: pasangan koneksi kedua ke Room Master (memakai sesi host yang sama). */
-  attachMaster(code, token, name, since) {
-    this.role = 'h'; this.peerRole = 'm'; this.code = code; this.token = token; this.name = name; this.idle = 1500; this.begin(since || 0);
+  /** Room Master: kanal tambahan ke kursi pemain lain (peerRole '1' / '2'), memakai sesi host yang sama. */
+  attachPeer(code, token, name, peerRole, since) {
+    this.role = 'h'; this.peerRole = peerRole; this.code = code; this.token = token; this.name = name; this.idle = peerRole === '1' ? 450 : 700; this.begin(since || 0);
   }
-  async join(code, name, asMaster) {
-    const j = await this.call('POST', { action: 'join', code: code, name: name, as: asMaster ? 'master' : 'player' });
+  /** Pemain: gabung; server memberi kursi 1 (merah) atau 2 (biru). Satu-satunya lawan bicara = Room Master. */
+  async join(code, name) {
+    const j = await this.call('POST', { action: 'join', code: code, name: name });
     this.role = j.role; this.peerRole = 'h'; this.code = j.code; this.token = j.token; this.name = j.name; this.peerName = j.hostName; this.begin(j.base || 0); return j;
   }
   begin(since) {
@@ -2524,7 +2534,7 @@ class NetSession {
       if (j.peer) await this.onPeer(j.peer);
       for (let i = 0; i < j.msgs.length; i++) await this.onMail(j.msgs[i]);
     } catch (e) {
-      if (e.gone) { this.close(this.isHost ? 'Ruangan sudah tidak ada.' : 'Ruangan ditutup oleh host.'); return; }
+      if (e.gone) { this.close(this.isHost ? 'Ruangan sudah tidak ada.' : 'Ruangan ditutup oleh Room Master.'); return; }
       if (++this.failCount >= 25) { this.close('Server tidak dapat dihubungi.'); return; }
     }
     if (this.stopped) return;
@@ -2539,7 +2549,7 @@ class NetSession {
     } else if (!p.joined && this.peerJoined) {
       this.peerJoined = false;
       if (this.h.onPeer) this.h.onPeer(false, '');
-      if (this.isHost && this.ready) this.close('Lawan keluar dari ruangan.');
+      if (this.isHost && this.ready) this.close('Pemain keluar dari ruangan.');
     }
     if (p.name) this.peerName = p.name;
   }
@@ -2549,7 +2559,7 @@ class NetSession {
       if (!this.p2p && !this.relay) this.enableRelay();     // lawan sudah pakai relay → ikut, supaya balasan kita juga terkirim
       const a = m.d || []; for (let i = 0; i < a.length; i++) this.onData(a[i], true);
     }
-    else if (m.t === 'bye') { this.close('Lawan keluar dari permainan.'); }
+    else if (m.t === 'bye') { this.close(this.isHost ? 'Pemain keluar dari permainan.' : 'Room Master keluar. Ruangan ditutup.'); }
   }
 
   /* ---------- WebRTC ---------- */
@@ -2642,7 +2652,7 @@ class NetSession {
       this.routeTimer = setInterval(() => this.probeRoute(), 3000); this.probeRoute();
       this.watchTimer = setInterval(() => {
         if (this.stopped || !this.ready) return;
-        if (performance.now() - this.lastRx > 8000) this.close('Koneksi ke lawan terputus.');
+        if (performance.now() - this.lastRx > 8000) this.close(this.isHost ? 'Koneksi ke pemain terputus.' : 'Koneksi ke Room Master terputus.');
       }, 1000);
       if (this.h.onReady) this.h.onReady(this.mode);
     }
@@ -2699,7 +2709,7 @@ class NetSession {
   onData(raw, viaRelay) {
     let m; try { m = JSON.parse(raw); } catch (e) { return; }
     if (!m || !m.t) return;
-    if (viaRelay && this.p2p && (m.t === 'p' || m.t === 'w' || m.t === 'pi' || m.t === 'po')) return;   // jalur langsung sudah aktif: buang yang basi
+    if (viaRelay && this.p2p && (m.t === 'p' || m.t === 's' || m.t === 'st' || m.t === 'pi' || m.t === 'po')) return;   // jalur langsung sudah aktif: buang yang basi
     this.lastRx = performance.now();
     if (m.t === 'pi') { this.send('u', { t: 'po', ts: m.ts }); return; }
     if (m.t === 'po') {
@@ -2745,34 +2755,37 @@ const Online = (() => {
   const HMAP = { ArrowLeft: 'KeyA', ArrowRight: 'KeyD', ArrowUp: 'KeyW', ArrowDown: 'KeyS', ShiftRight: 'Space', ShiftLeft: 'Space', Enter: 'KeyE' };
   const GMAP = { KeyA: 'ArrowLeft', KeyD: 'ArrowRight', KeyW: 'ArrowUp', KeyS: 'ArrowDown', Space: 'ShiftRight', KeyE: 'Enter', ShiftLeft: 'ShiftRight',
     ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ShiftRight: 'ShiftRight', Enter: 'Enter' };
-  /* MODEL ONLINE = "BALAPAN DUNIA SENDIRI" (sama seperti Kebun Angka / FloraBite):
-     tiap perangkat menjalankan SELURUH dunia permainan untuk pemainnya sendiri (tong, boss, api, gerbang, soal, koin, tabrakan, skor)
-     dengan SEED yang sama dari host, jadi gelombang tong & urutan soal identik untuk kedua pemain. Tidak ada yang menunggu jaringan:
-     tombol, lompatan, tabrakan, jawaban soal, dan skor semuanya instan di perangkat sendiri → tidak ada lag yang dirasakan P1 maupun P2.
-     Lawan hanya BAYANGAN: posisi (30×/dtk, interpolasi) + ringkasan skor (8×/dtk). Bayangan tidak menabrak tong / mengambil koin siapa pun.
-     Jaringan hanya dipakai untuk: 'go' (seed + pengaturan), posisi/skor lawan, dan penentuan pemenang di akhir oleh host.
-     ROOM MASTER = penonton: tersambung HANYA ke host; menerima posisi + skor kedua pemain (host meneruskan P2) dan menjalankan dunia
-     "acuan" dari seed yang sama (tanpa pemain) sehingga tong/boss yang dilihatnya sama dengan yang dihadapi pemain. */
-  const O = { on: false, host: false, guest: false, master: false, me: 0, ready: false, gen: 0, ended: false, waiting: false, net: null, name: '',
-    held: new Set(), seq: 0, accP: 0, accS: 0, dn: [null, null], dl: 0,
-    mnet: null, mReady: false };
-  const PKT_HZ = 30, ST_HZ = 8;
+  /* MODEL ONLINE = "SATU DUNIA DI ROOM MASTER" (topologi bintang):
+     - ROOM MASTER (pembuat ruangan, jaringan cepat) menjalankan SATU-SATUNYA dunia permainan: tong, boss, api, arena miring, koin, palu,
+       gerbang & soal, skor, garis akhir, pemenang. P1 dan P2 bermain di dunia yang SAMA itu: tong yang sama, koin yang sama (berebut), boss yang sama.
+     - PEMAIN (P1 merah / P2 biru) hanya tersambung ke Room Master. Gerak karakter sendiri (lari, lompat, tangga) dihitung LOKAL di perangkat pemain
+       sehingga tombol terasa instan tanpa menunggu jaringan, lalu posisinya dikirim ke master 40×/dtk. Dunia (tong, api, boss, koin) dikirim master
+       30×/dtk dan digambar dengan prediksi maju seperlunya (dead reckoning), jadi yang dilihat pemain = keadaan dunia master "saat ini".
+     - Interaksi yang melibatkan dunia (kena tong/api, ambil koin/palu, lompati tong, gerbang soal, skor) diputuskan master dari posisi pemain,
+       lalu dikembalikan ke pemain lewat pesan andal (hit, pn, ev, ps) + ringkasan status 10×/dtk. Master tidak ikut bermain: ia penonton + wasit. */
+  const O = { on: false, master: false, me: -1, gen: 0, ready: false, net: null, nets: [null, null], rdy: [false, false], name: '', cur: -1,
+    held: new Set(), seq: 0, accP: 0, accS: 0, accT: 0, snapN: 0, openSeq: 0, sn: null, evq: [], pnKey: ['', ''], tm: [[0, 0, 0, 0, 0], [0, 0, 0, 0, 0]], code: '', token: '' };
+  const PKT_HZ = 40, SNAP_HZ = 30, ST_HZ = 10;
   const newRem = () => ({ has: false, n: 0, x: 0, y: 0, vx: 0, vy: 0, g: 0, c: 0, f: 1, cp: 0, s: 0, at: 0 });
-  O.rm = newRem();            // host: bayangan P2 (dari tamu)
-  O.r0 = newRem();            // tamu: bayangan P1 (dari host)
-  O.mr = [newRem(), newRem()];   // master: bayangan P1 & P2 (dari host)
+  O.mr = [newRem(), newRem()];   // master: posisi terakhir yang dilaporkan P1 & P2
+  O.r0 = newRem();               // pemain: posisi terakhir pemain lain (diteruskan master)
   const live = () => { const s = Game.getState(); return s === 'playing' || s === 'countdown'; };
   const clean = (s, d) => String(s || '').toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim().slice(0, 8) || d;
   const setNames = n => { players[0].name = clean(n && n[0], 'P1'); players[1].name = clean(n && n[1], 'P2'); };
+  const R1 = v => Math.round(v * 10) / 10;
+  const T10 = v => Math.round(v * 10);
+  const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, +v || 0));
+  const ni = (v, d) => { v = Math.round(Number(v)); return Number.isFinite(v) ? v : (d || 0); };
 
-  O.send = (ch, obj) => !!(O.net && O.ready && O.net.send(ch, obj));
-  O.msend = (ch, obj) => !!(O.mnet && O.mReady && O.mnet.send(ch, obj));      // host → Room Master
-  O.bcast = (ch, obj) => { const a = O.send(ch, obj); O.msend(ch, obj); return a; };   // host → tamu + master
+  O.send = (ch, obj) => !!(O.net && O.ready && O.net.send(ch, obj));                 // pemain → Room Master
+  O.to = (i, ch, obj) => !!(O.nets[i] && O.rdy[i] && O.nets[i].send(ch, obj));        // Room Master → pemain i
+  O.all = (ch, obj) => { O.to(0, ch, obj); O.to(1, ch, obj); };
+  O.both = () => O.rdy[0] && O.rdy[1];
 
-  /* Rute tombol: host memetakan panah/Enter ke tombol P1; tamu memetakan WASD/Spasi ke tombol P2. Semua diproses LOKAL. */
+  /* Rute tombol (pemain): P1 memetakan panah/Enter ke tombol P1; P2 memetakan WASD/Spasi ke tombol P2. Semua diproses LOKAL. */
   O.route = (c, d) => {
     if (!O.on || O.master) return c;
-    if (O.host) return (live() && HMAP[c]) || c;
+    if (O.me === 0) return (live() && HMAP[c]) || c;
     const m = GMAP[c]; if (!m) return c;
     if (d) { if (!live()) return c; O.held.add(m); return m; }
     const was = O.held.delete(m);
@@ -2782,19 +2795,16 @@ const Online = (() => {
   window.addEventListener('blur', () => { if (O.on) O.relHeld(); });
   document.addEventListener('visibilitychange', () => { if (O.on && document.hidden) O.relHeld(); });
 
-  O.owd = () => O.net ? Math.min(0.4, (O.net.rtt || 0) / 2000) : 0;
-  O.newSeed = () => 1 + Math.floor(Math.random() * 2147483646);
+  O.owd = () => O.net ? Math.min(0.4, (O.net.rtt || 0) / 2000) : 0;                 // pemain: setengah ping ke master (detik)
+  const owdOf = i => { const n = O.nets[i]; return n ? Math.min(0.4, (n.rtt || 0) / 2000) : 0; };
 
-  /* ----- Paket posisi pemain sendiri (tak andal, 30×/dtk) & penerimaannya ----- */
-  const R1 = v => Math.round(v * 10) / 10;
-  const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, +v || 0));
+  /* ================= PEMAIN → MASTER: posisi karakter sendiri (tak andal, 40×/dtk) ================= */
   O.pkt = () => {
     const p = players[O.me];
-    return { t: 'p', i: O.me, n: ++O.seq, x: R1(p.x), y: R1(p.y), vx: Math.round(p.vx + (p.climbing || p.panel ? 0 : Tilt.slide() * (p.hammer > 0 ? 0.5 : 1))), vy: Math.round(p.vy), g: p.onGround ? 1 : 0,
-      c: p.climbing && p.ladder ? Level.ladders.indexOf(p.ladder) + 1 : 0, f: p.facing < 0 ? -1 : 1, cp: Math.round(p.climbPhase),
-      s: (p.hitTimer > 0 ? 1 : 0) | (p.invuln > 0 ? 2 : 0) | (p.panel ? 4 : 0) };
+    return { t: 'p', i: O.me, g: O.gen, n: ++O.seq, x: R1(p.x), y: R1(p.y), vx: Math.round(p.vx + (p.climbing || p.panel ? 0 : Tilt.slide() * (p.hammer > 0 ? 0.5 : 1))), vy: Math.round(p.vy), g: p.onGround ? 1 : 0,
+      c: p.climbing && p.ladder ? Level.ladders.indexOf(p.ladder) + 1 : 0, f: p.facing < 0 ? -1 : 1, cp: Math.round(p.climbPhase), s: p.panel ? 4 : 0 };
   };
-  O.recvPkt = (m, r, p) => {                                  // r = keadaan bayangan yang diperbarui, p = pemain bayangan; true bila diterima
+  O.recvPkt = (m, r, p) => {                                  // r = keadaan terlapor, p = pemain; true bila diterima
     if (typeof m.n !== 'number' || m.n <= r.n || !isFinite(m.x) || !isFinite(m.y)) return false;     // basi / tak berurutan / tak valid
     const c = m.c | 0;
     r.n = m.n; r.at = performance.now();
@@ -2804,16 +2814,16 @@ const Online = (() => {
     if (!r.has) { r.has = true; p.x = r.x; p.y = r.y; }
     return true;
   };
-  /* Gambar/ikuti bayangan lawan: ekstrapolasi singkat dari kecepatan terakhir + penghalusan (menutup jeda paket tanpa tersendat). */
-  O.follow = (p, r, dt, rate) => {
+  /* Ikuti posisi terlapor. lead = detik tambahan yang diprediksi maju (master: setengah ping pemain, karena paket sudah "tua" saat tiba). */
+  O.follow = (p, r, dt, rate, lead) => {
     if (!r.has) return;
-    const age = Math.min(0.1, (performance.now() - r.at) / 1000);
-    const tx = r.x + (r.c ? 0 : r.vx * age), ty = r.y + (r.g || r.c ? 0 : r.vy * age);
+    const e = Math.min(0.28, (performance.now() - r.at) / 1000 + (lead || 0)), ev = Math.min(0.15, e);
+    const tx = r.x + (r.c ? 0 : r.vx * e);
+    const ty = r.y + (r.g || r.c ? 0 : r.vy * ev + 0.5 * CONFIG.GRAVITY * ev * ev);
     p.vx = r.vx; p.vy = r.vy; p.onGround = !!r.g; p.facing = r.f; p.climbPhase = r.cp;
     p.climbing = !!r.c; p.ladder = r.c ? Level.ladders[r.c - 1] : null;
-    const hit = r.s & 1;
-    if (hit && !p.hitTimer) FX.burst(p.x + p.w / 2, p.y + p.h / 2, 14, ['#ff4d4d', '#ff8a3d', '#ffd23f', '#ffffff'], 170, 0.5, 420, 3);   // tanpa kilatan layar: bukan kita yang kena
-    p.hitTimer = hit ? 0.2 : 0; p.invuln = (r.s & 2) ? 0.3 : 0; p.ghostAns = !!(r.s & 4);
+    if (r.g) p.chain = 0;                                                  // rantai lompati-tong berakhir saat mendarat (dijalankan master untuk pemain jarak jauh)
+    p.ghostAns = !!(r.s & 4);
     const dx = tx - p.x, dy = ty - p.y;
     if (dx * dx + dy * dy > 8100) { p.x = tx; p.y = ty; return; }          // terlalu jauh (respawn/teleport): langsung loncat
     const k = 1 - Math.exp(-dt * rate);
@@ -2822,223 +2832,408 @@ const Online = (() => {
     if (Math.abs(dx) < 0.2) p.x = tx;
   };
 
-  /* ----- Ringkasan skor/status pemain (8×/dtk, tak andal) & statistik akhir (andal) ----- */
+  /* ================= STATUS PEMAIN (10×/dtk dari master) & statistik akhir ================= */
   const gmask = idx => { let m = 0; Level.gates.forEach((g, i) => { if (!g.alias && g.open[idx]) m |= 1 << i; }); return m; };
+  const coolOf = idx => { const a = []; Level.gates.forEach(g => { if (!g.alias) a.push(T10(g.cool[idx])); }); return a; };
   O.stat = p => ({ sc: p.score, co: p.coins, gm: p.gems, ht: p.hits, sv: p.solved, wr: p.wrong, sk: p.streak, ct: Math.round(p.comboT * 10) / 10,
-    sh: Math.ceil(p.shield), ha: Math.ceil(p.hammer), bo: Math.ceil(p.boost), sl: p.slow > 0 ? 1 : 0, fi: p.finished ? 1 : 0,
-    pt: [p.pts.coin, p.pts.gem, p.pts.math, p.pts.finish, p.pts.skill], gt: gmask(p.index) });
-  const ni = (v, d) => { v = Math.round(Number(v)); return Number.isFinite(v) ? v : (d || 0); };
-  O.putStat = (p, s) => {
-    if (!s || typeof s !== 'object' || p.index === O.me) return;           // milik kita sendiri tidak pernah ditimpa
+    sh: T10(p.shield), ha: T10(p.hammer), bo: T10(p.boost), sl: T10(p.slow), iv: T10(p.invuln), fi: p.finished ? 1 : 0,
+    pt: [p.pts.coin, p.pts.gem, p.pts.math, p.pts.finish, p.pts.skill], gt: gmask(p.index), cl: coolOf(p.index) });
+  /* Terapkan status dari master. Pemain sendiri: pewaktu hanya dinaikkan (turun dihitung lokal agar mulus). */
+  O.putStat = (p, s, force) => {
+    if (!s || typeof s !== 'object') return;
+    const own = !O.master && p.index === O.me && !force, od = own ? O.owd() : 0;
     p.score = Math.max(0, ni(s.sc)); p.coins = Math.max(0, ni(s.co)); p.gems = Math.max(0, ni(s.gm)); p.hits = Math.max(0, ni(s.ht));
     p.solved = Math.max(0, ni(s.sv)); p.wrong = Math.max(0, ni(s.wr)); p.streak = Math.max(0, Math.min(99, ni(s.sk))); p.comboT = Math.max(0, Math.min(CONFIG.COMBO_TIME, +s.ct || 0));
-    p.shield = Math.max(0, ni(s.sh)); p.hammer = Math.max(0, ni(s.ha)); p.boost = Math.max(0, ni(s.bo)); p.slow = s.sl ? 1 : 0; p.finished = !!s.fi;
+    p.finished = !!s.fi;
+    for (const f of [['shield', 'sh'], ['hammer', 'ha'], ['boost', 'bo'], ['slow', 'sl'], ['invuln', 'iv']]) {
+      const v = Math.max(0, ni(s[f[1]]) / 10 - od);
+      if (!own) p[f[0]] = v; else if (v > p[f[0]] + 0.2 || (v === 0 && p[f[0]] > 0.6 && f[0] !== 'invuln')) p[f[0]] = v;
+    }
     const pt = Array.isArray(s.pt) ? s.pt : [];
     p.pts.coin = ni(pt[0]); p.pts.gem = ni(pt[1]); p.pts.math = ni(pt[2]); p.pts.finish = ni(pt[3]); p.pts.skill = ni(pt[4]);
     const gt = ni(s.gt); Level.gates.forEach((g, i) => { if (!g.alias) g.open[p.index] = !!((gt >> i) & 1); });
+    if (Array.isArray(s.cl)) Level.gates.forEach((g, i) => { if (!g.alias && i < s.cl.length) g.cool[p.index] = Math.max(0, ni(s.cl[i]) / 10 - od); });
+  };
+  O.stMsg = () => ({ t: 'st', g: O.gen, c: Level.collectibles.map(c => c.active ? 1 : 0).join(''), h: Level.hammers.map(h => h.active ? 1 : 0).join(''), p: [O.stat(players[0]), O.stat(players[1])] });
+  O.recvSt = m => {
+    if (m.g !== O.gen) return;
+    if (typeof m.c === 'string') Level.collectibles.forEach((c, i) => { c.active = m.c.charAt(i) !== '0'; });
+    if (typeof m.h === 'string') Level.hammers.forEach((h, i) => { h.active = m.h.charAt(i) !== '0'; });
+    if (Array.isArray(m.p)) { O.putStat(players[0], m.p[0]); O.putStat(players[1], m.p[1]); }
   };
 
-  /* ----- Akhir pertandingan: tiap pemain selesai di dunianya sendiri ('done'), HOST yang memutuskan pemenang ('end') ----- */
-  O.localEnd = (r, el) => {
-    const rec = { t: 'done', g: O.gen, reason: r.reason === 'finish' ? 'finish' : 'time', el: Math.round(el * 1000) / 1000, s: O.stat(players[O.me]) };
-    O.waiting = true; O.dn[O.me] = rec; O.dl = performance.now();
-    if (O.guest) O.send('r', rec);
-    else if (O.host) O.tryDecide();
+  /* ================= SNAPSHOT DUNIA (master → pemain, 30×/dtk, tak andal) ================= */
+  O.snap = () => {
+    const b = [], f = [];
+    Barrels.pool.forEach((q, i) => {
+      if (!q.active) return;
+      const L = q.onLadder;
+      b.push([i, R1(q.x), R1(q.y), L ? 0 : Math.round(q.vx), L ? 130 : Math.round(q.vy),
+        (q.grounded ? 1 : 0) | (L ? 2 : 0) | (q.dir < 0 ? 4 : 0) | (q.kind === 'fast' ? 8 : q.kind === 'ladder' ? 16 : 0), Math.round(q.angle * 100) / 100]);
+    });
+    Flames.pool.forEach((q, i) => { if (q.active) f.push([i, R1(q.x), R1(q.y), q.dir < 0 ? -1 : 1, T10(q.life)]); });
+    return { t: 's', n: ++O.snapN, g: O.gen, el: Math.round(Game.getElapsed() * 1000) / 1000, b, f,
+      bs: [Boss.S.phase, Math.round(Boss.S.throwT * 100), Math.round(Barrels.timer() * 100), Boss.S.rages],
+      tl: [Math.round(Tilt.S.a * 10000), Tilt.S.dir] };
   };
-  const scoreOf = (rec, p) => rec ? rec.s.sc : p.score;
-  const byScore = (a, b) => { const x = scoreOf(a, players[0]), y = scoreOf(b, players[1]); return x > y ? 0 : y > x ? 1 : -1; };
-  O.tryDecide = () => {
-    if (!O.host || O.ended) return;
-    const a = O.dn[0], b = O.dn[1], age = O.dl ? performance.now() - O.dl : 0;
-    const fa = !!a && a.reason === 'finish', fb = !!b && b.reason === 'finish';
-    const rtt = O.net ? (O.net.rtt || 0) : 0;
-    let r = null;
-    if (fa && fb) { const d = a.el - b.el; r = Math.abs(d) < 0.02 ? { reason: 'both', winner: byScore(a, b) } : { reason: 'finish', winner: d < 0 ? 0 : 1 }; }
-    else if (fb) r = { reason: 'finish', winner: 1 };                                       // tamu tiba lebih dulu
-    else if (fa) { if (b || age >= Math.min(900, rtt / 2 + 150)) r = { reason: 'finish', winner: 0 }; }   // beri waktu pesan 'tiba' tamu yang mungkin lebih awal
-    else if (a && b) r = { reason: 'time', winner: byScore(a, b) };
-    else if (a && age >= 6000) r = { reason: 'time', winner: byScore(a, b) };              // tamu tak kunjung selesai: pakai skor terakhirnya
-    if (!r) return;
-    r.elapsed = Game.getElapsed();
-    const st = [a ? a.s : O.stat(players[0]), b ? b.s : O.stat(players[1])];
-    O.ended = true; O.waiting = false;
-    O.putStat(players[1], st[1]);
-    O.bcast('r', { t: 'end', g: O.gen, r: r, st: st });
+  O.recvSnap = m => {
+    if (m.g !== O.gen || typeof m.n !== 'number' || (O.sn && m.n <= O.sn.n)) return;
+    const b = {}, f = {};
+    (m.b || []).forEach(d => { if (d && d.length >= 7) b[d[0] | 0] = d; });
+    (m.f || []).forEach(d => { if (d && d.length >= 5) f[d[0] | 0] = d; });
+    O.sn = { n: m.n, at: performance.now(), b, f };
+    if (Array.isArray(m.bs)) { Boss.S.phase = Tilt.S.prev = m.bs[0] | 0; Boss.S.throwT = (+m.bs[1] || 0) / 100; Barrels.setTimer((+m.bs[2] || 0) / 100); Boss.S.rages = m.bs[3] | 0; }
+    if (Array.isArray(m.tl)) { Tilt.S.dir = m.tl[1] < 0 ? -1 : 1; const a = (+m.tl[0] || 0) / 10000; Tilt.S.a += (a - Tilt.S.a) * 0.4; if (Math.abs(a - Tilt.S.a) > 0.02) Tilt.S.a = a; }
+    if (typeof m.el === 'number') Game.net.syncClock(m.el + O.owd());
+  };
+  /* Tiap frame di layar pemain: tong & api digambar maju sejauh umur snapshot + setengah ping (prediksi lurus), dihaluskan. */
+  O.worldFrame = dt => {
+    const s = O.sn; if (!s) return;
+    const age = Math.min(0.25, (performance.now() - s.at) / 1000 + O.owd());
+    const k = 1 - Math.exp(-dt * 40), R = CONFIG.BARREL_R, G = CONFIG.GRAVITY * CONFIG.BARREL_GRAVITY;
+    Barrels.pool.forEach((q, i) => {
+      const d = s.b[i];
+      if (!d) { q.active = false; return; }
+      const fl = d[5], grounded = !!(fl & 1), lad = !!(fl & 2);
+      let tx = d[1] + d[3] * age, ty = d[2];
+      if (lad) ty += d[4] * age;
+      else if (!grounded) { const v2 = Math.min(CONFIG.MAX_FALL, d[4] + G * age); ty += (d[4] + v2) / 2 * age; }
+      if (!q.active || Math.abs(tx - q.x) > 60 || Math.abs(ty - q.y) > 60) { q.x = tx; q.y = ty; } else { q.x += (tx - q.x) * k; q.y += (ty - q.y) * k; }
+      q.active = true; q.grounded = grounded; q.onLadder = lad ? true : null; q.dir = (fl & 4) ? -1 : 1;
+      q.kind = (fl & 8) ? 'fast' : (fl & 16) ? 'ladder' : 'normal'; q.vx = d[3]; q.vy = d[4];
+      q.angle = d[6] + (lad ? 6 * age : d[3] / R * age);
+    });
+    Flames.pool.forEach((q, i) => {
+      const d = s.f[i];
+      if (!d) { q.active = false; return; }
+      if (!q.active || Math.abs(d[1] - q.x) > 60 || Math.abs(d[2] - q.y) > 60) { q.x = d[1]; q.y = d[2]; } else { q.x += (d[1] - q.x) * k; q.y += (d[2] - q.y) * k; }
+      q.active = true; q.dir = d[3]; q.climb = null; q.life = d[4] / 10;
+    });
+  };
+
+  /* ================= PERISTIWA (efek, suara, skor melayang) master → pemain, andal ================= */
+  const PERSONAL = { coin: 1, gem: 1, hit: 1, gateOpen: 1, gateWrong: 1, boost: 1, shield: 1, slow: 1 };
+  O.emit = (n, x, y, c, o) => {                                // dipanggil FX.event di master (kecuali efek lokal murni)
+    if (!O.on || !O.master || n === 'confetti' || n === 'jump' || n === 'land' || (o === undefined ? O.cur : o) === -2) return;
+    if (O.evq.length < 120) O.evq.push([n, Math.round(x), Math.round(y), o === undefined ? O.cur : o, c || 0]);
+  };
+  O.playEv = e => {
+    const n = e[0], x = e[1], y = e[2], o = e[3], c = e[4] || undefined;
+    if (n === 'pop') { const q = players[o]; Score.popup(x, y, String(c), q ? q.accent : '#fff'); return; }
+    if (n === 'throw') { SFX.play('throw'); return; }
+    if (PERSONAL[n] && o !== -1 && o !== O.me) {                // kejadian pribadi pemain lain: hanya percikan
+      if (n === 'hit') FX.burst(x, y, 14, ['#ff4d4d', '#ff8a3d', '#ffd23f', '#ffffff'], 170, 0.5, 420, 3);
+      return;
+    }
+    FX.event(n, x, y, c);
+  };
+  O.flushEvents = () => { if (O.evq.length) { O.all('r', { t: 'ev', g: O.gen, e: O.evq }); O.evq = []; } };
+
+  /* ================= KENA TONG / API: keputusan master → pemain (andal), diterapkan seketika di pemain ================= */
+  O.sendHit = p => {
+    O.to(p.index, 'r', { t: 'hit', g: O.gen, ht: p.hitTimer, iv: p.invuln, lc: p.ladderCd, tt: Level.solids.indexOf(p.throwTo), tht: p.throwT, kt: Level.solids.indexOf(p.knockTier),
+      vx: Math.round(p.vx), vy: Math.round(p.vy), n: p.hits });
+  };
+  O.recvHit = m => {
+    if (m.g !== O.gen || !live()) return;
+    const p = players[O.me];
+    p.hits = ni(m.n, p.hits); p.hitTimer = clampN(m.ht, 0, 2); p.invuln = clampN(m.iv, 0, 3); p.ladderCd = clampN(m.lc, 0, 2); p.jumpBuf = 0; p.hammer = 0; p.panel = null;
+    p.climbing = false; p.ladder = null; p.onGround = false; p.streak = 0; p.comboT = 0;
+    p.throwTo = m.tt >= 0 ? Level.solids[m.tt] || null : null; p.throwT = clampN(m.tht, 0, 3);
+    p.knockTier = m.kt >= 0 ? Level.solids[m.kt] || null : null;
+    p.vx = clampN(m.vx, -900, 900); p.vy = clampN(m.vy, -1500, 1500);
+  };
+  /* Master: pewaktu efek pemain naik (jawaban benar, palu) → kabari pemain seketika, tak menunggu ringkasan 10×/dtk. */
+  O.syncTimers = () => {
+    players.forEach((p, i) => {
+      const cur = [p.boost, p.shield, p.slow, p.hammer, p.invuln], prev = O.tm[i];
+      let up = false; for (let k = 0; k < 5; k++) if (cur[k] > prev[k] + 0.3) up = true;
+      O.tm[i] = cur;
+      if (up) O.to(i, 'r', { t: 'ps', g: O.gen, bo: T10(p.boost), sh: T10(p.shield), sl: T10(p.slow), ha: T10(p.hammer), iv: T10(p.invuln) });
+    });
+  };
+  O.recvPs = m => {
+    if (m.g !== O.gen || O.master) return;
+    const p = players[O.me], od = O.owd();
+    for (const f of [['boost', 'bo'], ['shield', 'sh'], ['slow', 'sl'], ['hammer', 'ha'], ['invuln', 'iv']]) p[f[0]] = Math.max(p[f[0]], Math.max(0, ni(m[f[1]]) / 10 - od));
+  };
+
+  /* ================= GERBANG & SOAL ================= */
+  /* Master memegang soal: ia membuat soal, menilai jawaban, memberi hadiah. Pemain hanya menampilkan panelnya & mengirim pilihan. */
+  O.panelMsg = (p, i) => {
+    const pn = p.panel;
+    return { t: 'pn', g: O.gen, gt: gmask(i), cl: coolOf(i), p: pn ? { gi: Level.gates.indexOf(pn.gate), q: { text: pn.q.text, options: pn.q.options, correct: pn.q.correct, answer: pn.q.answer, tier: pn.q.tier },
+      sel: pn.sel, ch: pn.chosen, ph: pn.phase, tl: Math.round(pn.timeLeft * 100) / 100, tot: pn.total, fbT: Math.round(pn.fbTimer * 100) / 100, fb: pn.fb } : null };
+  };
+  O.syncPanels = (force, oa) => {
+    players.forEach((p, i) => {
+      const pn = p.panel, key = pn ? pn.phase + '|' + pn.q.text + '|' + pn.chosen : '';
+      if (key === O.pnKey[i] && !(force && force[i])) return;
+      O.pnKey[i] = key;
+      const msg = O.panelMsg(p, i); if (force && force[i]) msg.oa = oa;          // balasan atas permintaan 'open' (agar panel kosong di pemain bisa ditutup bila ditolak)
+      O.to(i, 'r', msg);
+    });
+  };
+  O.recvPanel = m => {
+    if (m.g !== O.gen || O.master) return;
+    const p = players[O.me], od = O.owd();
+    if (typeof m.gt === 'number') Level.gates.forEach((g, i) => { if (!g.alias) g.open[p.index] = !!((m.gt >> i) & 1); });
+    if (Array.isArray(m.cl)) Level.gates.forEach((g, i) => { if (!g.alias && i < m.cl.length) g.cool[p.index] = Math.max(0, ni(m.cl[i]) / 10 - od); });
+    const d = m.p;
+    if (!d) { if (p.panel && p.panel.pending && m.oa !== p.panel.seq) return; p.panel = null; return; }
+    const g = Level.gates[d.gi]; if (!g || !d.q || !Array.isArray(d.q.options)) return;
+    p.panel = { gate: g, q: d.q, sel: d.sel & 3, chosen: d.ch | 0, phase: d.ph === 'feedback' ? 'feedback' : 'ask', timeLeft: Math.max(0, (+d.tl || 0) - (d.ph === 'ask' ? od : 0)), total: +d.tot || 10,
+      fbTimer: +d.fbT || 0, fb: d.fb || null };
+    p.vx = 0;
+  };
+  /* Pemain: input gerbang LOKAL (instan). Membuka soal menampilkan panel kosong dulu; isi soal datang dari master. */
+  O.gateInput = p => {
+    const k = KEYMAP[p.index], pn = p.panel;
+    if (!pn) {
+      if (!Input.wasPressed(k.act)) return;
+      const g = Gates.nearGate(p);
+      if (!g || g.open[p.index] || g.cool[p.index] > 0) return;
+      const Tm = QTIMES[settings.qtime];
+      p.panel = { gate: g, q: { text: '...', options: ['', '', '', ''], correct: -1, answer: '', tier: 1 }, sel: 0, chosen: -1, phase: 'ask', timeLeft: Tm, total: Tm, fbTimer: 0, fb: null, pending: true, at: performance.now(), seq: ++O.openSeq };
+      p.vx = 0; SFX.play('panelOpen');
+      O.send('r', { t: 'a', k: 'open', o: p.panel.seq });
+      return;
+    }
+    if (pn.pending || pn.phase !== 'ask') return;
+    let ch = false;
+    if (Input.wasPressed(k.left) || Input.wasPressed(k.right)) { pn.sel ^= 1; ch = true; }
+    if (Input.wasPressed(k.up) || Input.wasPressed(k.down)) { pn.sel ^= 2; ch = true; }
+    if (ch) { SFX.play('move'); O.send('r', { t: 'a', k: 'sel', i: pn.sel }); }
+    if (Input.wasPressed(k.act)) O.answer(p, pn.sel);
+    else if (Input.wasPressed(k.jump)) {
+      Input.consumeLatch(k.jump); O.send('r', { t: 'a', k: 'cancel' });
+      p.panel = null; p.invuln = Math.max(p.invuln, 0.8); SFX.play('back');
+    }
+  };
+  O.answer = (p, i) => {
+    const pn = p.panel;
+    if (!pn || pn.pending || pn.phase !== 'ask') return;
+    pn.sel = i; pn.chosen = i; pn.phase = 'wait';
+    O.send('r', { t: 'a', k: 'ans', i });
+  };
+  O.panelTick = dt => {                                       // pemain: hitung mundur tampilan lokal; master yang menilai
+    const p = players[O.me], pn = p && p.panel;
+    if (!pn) return;
+    if (pn.pending) { if (performance.now() - pn.at > 2500) p.panel = null; return; }
+    if (pn.phase !== 'feedback') pn.timeLeft = Math.max(0, pn.timeLeft - dt);
+  };
+  /* Master: aksi dari pemain. */
+  function onAct(i, m) {
+    const p = players[i], force = [false, false];
+    let oa = 0;
+    if (Game.getState() !== 'playing') return;
+    if (m.k === 'open') { Gates.tryOpen(p); force[i] = true; oa = m.o; }
+    else if (m.k === 'sel') { if (p.panel && p.panel.phase === 'ask') p.panel.sel = (m.i | 0) & 3; }
+    else if (m.k === 'ans') { if (p.panel && p.panel.phase === 'ask') Gates.answer(p, Math.max(-1, Math.min(3, m.i | 0))); }
+    else if (m.k === 'cancel') Gates.cancel(p);
+    O.syncPanels(force, oa);
+  }
+
+  /* ================= MULAI / AKHIR PERTANDINGAN ================= */
+  O.goMsg = () => {
+    const G = Game.net.get();
+    return { t: 'go', g: O.gen, s: { difficulty: settings.difficulty, duration: settings.duration, qtime: settings.qtime }, n: [players[0].name, players[1].name], cd: G.st === 'countdown' ? G.cd : 0 };
+  };
+  /* Master: syarat mulai = kedua pemain tersambung. */
+  O.begin = () => {
+    if (O.both()) return true;
+    toast(!O.rdy[0] && !O.rdy[1] ? 'Menunggu Pemain 1 dan Pemain 2...' : !O.rdy[0] ? 'Menunggu Pemain 1...' : 'Menunggu Pemain 2...');
+    Game.net.menu(); O.openLobby();
+    return false;
+  };
+  O.sendGo = () => {
+    O.gen++; O.mr = [newRem(), newRem()]; O.pnKey = ['', '']; O.evq = []; O.tm = [[0, 0, 0, 0, 0], [0, 0, 0, 0, 0]]; O.snapN = 0; O.accP = O.accS = O.accT = 0;
+    setNames([O.nets[0] && O.nets[0].peerName, O.nets[1] && O.nets[1].peerName]);
+    O.all('r', O.goMsg());
+  };
+  O.recvGo = m => {
+    O.gen = m.g; O.sn = null; O.r0 = newRem(); O.accP = O.accS = 0;
+    Object.assign(settings, m.s); setNames(m.n);
+    const od = O.owd(), cd = +m.cd || 0;
+    $('lobby').classList.add('hidden');
+    Game.net.start(cd > 0 ? Math.max(0.2, cd - od) : 0);
+  };
+  /* Master: hasil pertandingan (garis akhir / waktu habis) → kabari kedua pemain, lalu tampilkan di layar master. */
+  O.finish = r => {
+    O.flushEvents();
+    O.all('r', { t: 'end', g: O.gen, r, st: [O.stat(players[0]), O.stat(players[1])] });
     Game.net.end(r);
   };
-  /* Pesan 'end' dari host (tamu & master): statistik lawan (dan kedua pemain untuk master) disamakan dengan keputusan host. */
   O.recvEnd = m => {
-    if (m.g !== O.gen || O.ended) return;
-    O.ended = true; O.waiting = false;
-    if (Array.isArray(m.st)) { O.putStat(players[0], m.st[0]); O.putStat(players[1], m.st[1]); }
+    if (m.g !== O.gen || Game.getState() === 'result') return;
+    if (Array.isArray(m.st)) { O.putStat(players[0], m.st[0], true); O.putStat(players[1], m.st[1], true); }
+    players[O.me].panel = null;
     Game.net.end(m.r);
   };
 
-  /* ----- Mulai pertandingan ----- */
-  O.goMsg = seed => {
-    const G = Game.net.get();
-    return { t: 'go', g: O.gen, seed: seed, s: { difficulty: settings.difficulty, duration: settings.duration, qtime: settings.qtime }, n: [players[0].name, players[1].name],
-      cd: G.st === 'countdown' ? G.cd : 0, el: G.st === 'countdown' ? 0 : G.el };
-  };
-  O.sendGo = seed => {
-    O.gen++; O.ended = false; O.waiting = false; O.dn = [null, null]; O.dl = 0; O.rm.has = false;
-    setNames([O.name, O.net && O.net.peerName]);
-    O.seed = seed;
-    O.bcast('r', O.goMsg(seed));
-  };
-  /* Host: Room Master baru tersambung (bisa di tengah pertandingan) → kirim seed + waktu berjalan; master menjalankan dunia acuan yang sama. */
-  O.syncMaster = () => {
-    const st = Game.getState();
-    if (!(O.gen > 0 && O.seed && (st === 'countdown' || st === 'playing' || st === 'result'))) return;
-    O.msend('r', O.goMsg(O.seed));
-    if (st === 'result') O.msend('r', { t: 'end', g: O.gen, r: Game.getResult(), st: [O.stat(players[0]), O.stat(players[1])] });
-  };
-  /* Tamu / master: 'go' dari host. Hitung mundur / jam dikoreksi setengah ping supaya semua mencapai "GO!" bersamaan. */
-  O.recvGo = m => {
-    O.gen = m.g; O.ended = false; O.waiting = false; O.dn = [null, null]; O.dl = 0; O.seed = m.seed;
-    O.r0.has = O.mr[0].has = O.mr[1].has = false;
-    Object.assign(settings, m.s); setNames(m.n);
-    const owd = O.owd(), cd = +m.cd || 0;
-    $('lobby').classList.add('hidden');
-    Game.net.start(m.seed, cd > 0 ? Math.max(0.2, cd - owd) : 0, (+m.el || 0) + (cd > 0 ? 0 : owd));
-  };
-
-  /* ----- Pesan masuk ----- */
-  function onMsg(m) {
+  /* ================= PESAN MASUK ================= */
+  function onMasterMsg(i, m) {                                 // Room Master menerima dari pemain i
     if (m.t === 'p') {
-      if (O.host) { if (O.recvPkt(m, O.rm, players[1]) && O.mReady) O.mnet.send('u', Object.assign({}, m, { i: 1 })); }     // P2 juga diteruskan ke master
-      else if (O.master) { const i = m.i === 1 ? 1 : 0; O.recvPkt(m, O.mr[i], players[i]); }
-      else O.recvPkt(m, O.r0, players[0]);
-      return;
-    }
-    if (m.t === 'st') {
-      if (m.g !== O.gen) return;
-      if (O.host) { O.putStat(players[1], m.s); if (O.mReady) O.mnet.send('u', Object.assign({}, m, { i: 1 })); }
-      else if (O.master) O.putStat(players[m.i === 1 ? 1 : 0], m.s);
-      else O.putStat(players[0], m.s);
-      return;
-    }
-    if (O.host) {
-      if (m.t === 'done') { if (m.g === O.gen && !O.ended && m.s && typeof m.s === 'object' && live()) { O.dn[1] = m; O.tryDecide(); } }
-      else if (m.t === 'again' && Game.getState() === 'result') Game.net.begin();
-    } else {
-      if (m.t === 'go') O.recvGo(m);
-      else if (m.t === 'end') O.recvEnd(m);
-    }
+      if (m.g === O.gen && O.recvPkt(m, O.mr[i], players[i])) O.to(1 - i, 'u', Object.assign({}, m, { i }));      // diteruskan ke pemain lain (bayangan)
+    } else if (m.t === 'a') onAct(i, m);
+    else if (m.t === 'again' && Game.getState() === 'result') Game.net.begin();
+  }
+  function onPlayerMsg(m) {                                    // Pemain menerima dari Room Master (atau posisi pemain lain via master)
+    if (m.t === 'p') { if (m.i !== O.me && m.g === O.gen) O.recvPkt(m, O.r0, players[O.me ? 0 : 1]); return; }
+    if (m.t === 'go') return O.recvGo(m);
+    if (m.t === 's') return O.recvSnap(m);
+    if (m.t === 'st') return O.recvSt(m);
+    if (m.t === 'ev') { if (m.g === O.gen && Array.isArray(m.e)) for (const e of m.e) O.playEv(e); return; }
+    if (m.t === 'hit') return O.recvHit(m);
+    if (m.t === 'ps') return O.recvPs(m);
+    if (m.t === 'pn') return O.recvPanel(m);
+    if (m.t === 'end') return O.recvEnd(m);
+    if (m.t === 'abort') { Game.net.menu(); O.openLobby(); toast(m.m || 'Pertandingan dibatalkan.'); status(); }
   }
 
+  /* ================= LOOP ONLINE (dipanggil tiap frame) ================= */
   O.frame = (now, dt) => {
     const st = Game.getState();
     $('ping').classList.toggle('hidden', !(O.on && st !== 'menu'));
-    if (O.ready && live() && !O.master) {
-      O.accP += dt;                                       // akumulator (bukan "now - last >= N"): laju kirim tidak terkuantisasi ke frame
-      if (O.accP >= 1 / PKT_HZ) { O.accP = Math.min(O.accP - 1 / PKT_HZ, 1 / PKT_HZ); const pk = O.pkt(); O.net.send('u', pk); if (O.host) O.msend('u', pk); }
-      O.accS += dt;
-      if (O.accS >= 1 / ST_HZ) {
-        O.accS = Math.min(O.accS - 1 / ST_HZ, 1 / ST_HZ);
-        const s = { t: 'st', i: O.me, g: O.gen, s: O.stat(players[O.me]) };
-        O.net.send('u', s); if (O.host) O.msend('u', s);
+    if (O.master) {
+      for (let i = 0; i < 2; i++) O.follow(players[i], O.mr[i], dt, 40, owdOf(i));
+      if (st === 'playing' || st === 'countdown') {
+        O.accS += dt;
+        if (O.accS >= 1 / SNAP_HZ) { O.accS = Math.min(O.accS - 1 / SNAP_HZ, 1 / SNAP_HZ); if (st === 'playing') O.all('u', O.snap()); }
+        O.accT += dt;
+        if (O.accT >= 1 / ST_HZ) { O.accT = Math.min(O.accT - 1 / ST_HZ, 1 / ST_HZ); O.all('u', O.stMsg()); }
+        if (st === 'playing') { O.syncPanels(); O.syncTimers(); }
+        O.flushEvents();
       }
+      return;
     }
-    if (O.master) { O.follow(players[0], O.mr[0], dt, 30); O.follow(players[1], O.mr[1], dt, 30); }
-    else if (O.on) O.follow(players[O.me ? 0 : 1], O.host ? O.rm : O.r0, dt, 30);
-    if (O.host && O.waiting && !O.ended) O.tryDecide();
+    if (O.ready && live()) {
+      O.accP += dt;                                       // akumulator (bukan "now - last >= N"): laju kirim tidak terkuantisasi ke frame
+      if (O.accP >= 1 / PKT_HZ) { O.accP = Math.min(O.accP - 1 / PKT_HZ, 1 / PKT_HZ); O.net.send('u', O.pkt()); }
+    }
+    if (O.on) O.follow(players[O.me ? 0 : 1], O.r0, dt, 30, 0);
+    if (st === 'playing') O.worldFrame(dt);
   };
 
-  /* ----- Lobi ----- */
+  /* ================= LOBI ================= */
   function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 3800); }
   function showHome() { $('l-home').classList.remove('hidden'); $('l-room').classList.add('hidden'); $('l-back').textContent = 'KEMBALI'; }
   function showRoom(code) {
     $('l-home').classList.add('hidden'); $('l-room').classList.remove('hidden'); $('l-codebig').textContent = code;
-    $('l-start').classList.toggle('hidden', !O.host); $('l-copy').classList.toggle('hidden', !O.host); $('l-back').textContent = 'KELUAR RUANGAN'; status();
+    $('l-start').classList.toggle('hidden', !O.master); $('l-copy').classList.toggle('hidden', !O.master); $('l-back').textContent = 'KELUAR RUANGAN'; status();
+  }
+  function slotLine(i) {
+    const n = O.nets[i], nm = ((n && n.peerName) || '').toUpperCase(), tag = 'PEMAIN ' + (i + 1) + (i ? ' (BIRU)' : ' (MERAH)');
+    if (O.rdy[i]) return tag + ': ' + nm + ' - TERHUBUNG (' + (n.mode === 'p2p' ? (n.route === 'relay' ? 'TURN' : 'LANGSUNG') : 'RELAY') + ', ' + Math.round(n.rtt || 0) + ' MS)';
+    if (n && n.peerJoined) return tag + ': ' + nm + ' - MENYAMBUNGKAN...';
+    return tag + ': BELUM ADA';
   }
   function status() {
-    const n = O.net; if (!n) return;
     let msg, cls = '';
-    if (O.host) {
-      if (!n.peerJoined) msg = 'Menunggu teman masuk... bagikan kode / tautan.';
-      else if (!O.ready) msg = (n.peerName || 'Teman') + ' masuk - menyambungkan...';
-      else { msg = 'Terhubung dengan ' + (n.peerName || 'teman') + ' (' + (n.mode === 'p2p' ? 'langsung' : 'relay') + '). Kamu MERAH.'; cls = 'ok'; }
-      $('l-start').disabled = !O.ready;
-    } else if (O.master) { msg = O.ready ? 'Terhubung sebagai ROOM MASTER. Kamu menonton P1 (merah) vs P2 (biru) - menunggu host memulai...' : 'Menyambungkan ke host...'; cls = O.ready ? 'ok' : ''; }
-    else { msg = O.ready ? 'Terhubung. Kamu BIRU - menunggu host memulai...' : 'Menyambungkan ke host...'; cls = O.ready ? 'ok' : ''; }
+    if (O.master) {
+      msg = slotLine(0) + '\n' + slotLine(1) + '\n' + (O.both() ? 'Siap! Tekan MULAI. Kamu Room Master: dunia permainan berjalan di perangkatmu.' : 'Bagikan kode / tautan ke dua pemain.');
+      cls = O.both() ? 'ok' : '';
+      $('l-start').disabled = !O.both();
+    } else if (O.on) {
+      msg = O.ready ? 'Terhubung ke Room Master. Kamu PEMAIN ' + (O.me + 1) + ' (' + (O.me ? 'BIRU' : 'MERAH') + ') - menunggu Room Master memulai...' : 'Menyambungkan ke Room Master...';
+      cls = O.ready ? 'ok' : '';
+    } else return;
     $('l-status').textContent = msg; $('l-status').className = cls;
-    mstatus();
   }
-  function mstatus() {                                   // baris status Room Master di lobi host
-    const el = $('l-mstatus'), m = O.mnet;
-    if (!O.host || !m) { el.className = 'hidden'; return; }
-    const nm = (m.peerName || 'MASTER').toUpperCase();
-    if (O.mReady) { el.textContent = 'ROOM MASTER: ' + nm + ' (MENONTON)'; el.className = 'ok'; }
-    else if (m.peerJoined) { el.textContent = 'ROOM MASTER: ' + nm + ' - MENYAMBUNGKAN...'; el.className = ''; }
-    else { el.textContent = 'ROOM MASTER: BELUM ADA (OPSIONAL)'; el.className = ''; }
+  function pingBadge() {
+    const b = $('ping'); if (!O.on) return;
+    const one = (n, ready) => (n && ready ? (n.mode === 'p2p' ? (n.route === 'relay' ? 'TURN' : 'LANGSUNG') : 'RELAY') + ' ' + Math.round(n.rtt || 0) + ' MS' : '...');
+    let worst = 0, relay = false;
+    if (O.master) {
+      b.textContent = 'P1 ' + one(O.nets[0], O.rdy[0]) + '  |  P2 ' + one(O.nets[1], O.rdy[1]);
+      for (let i = 0; i < 2; i++) { const n = O.nets[i]; if (n && O.rdy[i]) { worst = Math.max(worst, n.rtt || 0); relay = relay || n.mode === 'relay'; } }
+    } else {
+      const n = O.net; b.textContent = n && O.ready ? one(n, true) + (n.dropped ? ' · BUF ' + n.dropped : '') : '...';
+      worst = n ? n.rtt || 0 : 0; relay = !!(n && n.mode === 'relay');
+    }
+    b.style.color = relay || worst > 180 ? '#ff6b6b' : worst > 90 ? '#ffd23f' : '#7dff7a';
   }
 
-  /* Host: sesi kedua khusus Room Master (kursi terpisah dari pemain; memakai token host yang sama). Bila master keluar,
-     sesi dibuat ulang dengan penunjuk 'since' yang diteruskan supaya pesan lama (mis. 'bye') tidak terbaca lagi. */
-  function mkMaster(since) {
-    if (!O.on || !O.host || !O.net || !O.net.code) return;
-    const mm = new NetSession({
+  /* Room Master: satu sesi per kursi pemain. Bila pemain keluar, sesi kursi itu dibuat ulang dengan penunjuk 'since' yang diteruskan
+     supaya pesan lama (mis. 'bye') tidak terbaca lagi dan pemain pengganti bisa masuk. */
+  function mkSlot(i) {
+    const sess = new NetSession({
       onPeer: (joined, name) => {
-        if (O.mnet !== mm) return;
-        if (joined) toast('Room Master ' + (name || '') + ' bergabung.');
-        else { toast('Room Master keluar.'); if (!O.mReady && mm.rtcStarted) { rebuildMaster(mm); return; } }
+        if (O.nets[i] !== sess) return;
+        if (joined) toast('Pemain ' + (i + 1) + ' ' + (name || '') + ' bergabung.');
+        else slotGone(i, sess, 'Pemain ' + (i + 1) + ' keluar.');
         status();
       },
-      onReady: () => { if (O.mnet !== mm) return; O.mReady = true; O.syncMaster(); status(); },
-      onStatus: () => { },
-      onMessage: () => { },
-      onClose: () => { if (O.mnet === mm) rebuildMaster(mm); }
+      onReady: () => { if (O.nets[i] !== sess) return; O.rdy[i] = true; status(); },
+      onStatus: () => { if (O.nets[i] === sess) { pingBadge(); status(); } },
+      onMessage: m => { if (O.nets[i] === sess) onMasterMsg(i, m); },
+      onClose: reason => { if (O.nets[i] === sess) slotGone(i, sess, reason || ('Pemain ' + (i + 1) + ' terputus.')); }
     });
-    O.mnet = mm; O.mReady = false;
-    mm.attachMaster(O.net.code, O.net.token, O.name, since);
+    O.nets[i] = sess; O.rdy[i] = false;
+    return sess;
   }
-  function rebuildMaster(old) {
-    const since = old.since;
-    O.mReady = false; O.mnet = null;
-    try { old.teardown(); } catch (e) { /* abaikan */ }
-    if (O.on && O.host) setTimeout(() => mkMaster(since), 50);
+  function slotGone(i, sess, msg) {
+    if (O.nets[i] !== sess) return;
+    const since = sess.since, st = Game.getState();
+    toast(msg);
+    O.rdy[i] = false; O.nets[i] = null;
+    try { sess.teardown(); } catch (e) { /* abaikan */ }
+    if (O.on && O.master) {
+      if (st === 'countdown' || st === 'playing') {                      // pertandingan batal: pemain lain kembali ke lobi
+        O.to(1 - i, 'r', { t: 'abort', m: 'Pemain ' + (i + 1) + ' keluar. Pertandingan dibatalkan.' });
+        Game.net.menu(); O.openLobby();
+      }
+      setTimeout(() => { if (O.on && O.master && !O.nets[i]) mkSlot(i).attachPeer(O.code, O.token, O.name, String(i + 1), since); status(); }, 50);
+    }
     status();
   }
-  function ping(mode, rtt) {
-    const b = $('ping'); const nt = O.net, drop = nt && nt.dropped ? ' · BUF ' + nt.dropped : '';
-    b.textContent = (mode === 'p2p' ? (nt && nt.route === 'relay' ? 'TURN' : 'LANGSUNG') : mode === 'relay' ? 'RELAY' : '...') + ' - ' + Math.round(rtt || 0) + ' MS' + drop;
-    b.style.color = mode === 'relay' || rtt > 180 ? '#ff6b6b' : rtt > 90 ? '#ffd23f' : '#7dff7a';
-  }
-  function mk() {
+  function mkPlayer() {
     O.ready = false;
     O.net = new NetSession({
       onPeer: () => status(),
       onReady: () => { O.ready = true; status(); },
-      onStatus: (mode, rtt) => { ping(mode, rtt); status(); },
-      onMessage: onMsg,
-      onClose: reason => { if (O.host && O.net) O.net.farewell(); reset(); Game.net.menu(); toast(reason || 'Koneksi terputus.'); }
+      onStatus: () => { pingBadge(); status(); },
+      onMessage: onPlayerMsg,
+      onClose: reason => { reset(); Game.net.menu(); toast(reason || 'Koneksi terputus.'); }
     });
   }
   function reset() {
-    O.relHeld(); O.on = O.host = O.guest = O.master = O.ready = O.ended = O.waiting = false; O.net = null; O.held.clear();
-    if (O.mnet) { try { O.mnet.teardown(); } catch (e) { /* abaikan */ } }
-    O.mnet = null; O.mReady = false; O.dn = [null, null]; O.dl = 0; O.seed = 0;
-    O.rm = newRem(); O.r0 = newRem(); O.mr = [newRem(), newRem()]; O.seq = 0; O.accP = O.accS = 0;
+    O.relHeld(); O.on = O.master = O.ready = false; O.me = -1; O.net = null; O.held.clear();
+    for (let i = 0; i < 2; i++) { if (O.nets[i]) { try { O.nets[i].teardown(); } catch (e) { /* abaikan */ } } O.nets[i] = null; O.rdy[i] = false; }
+    O.mr = [newRem(), newRem()]; O.r0 = newRem(); O.sn = null; O.snapN = 0; O.evq = []; O.pnKey = ['', '']; O.seq = 0; O.accP = O.accS = O.accT = 0; O.cur = -1; O.code = O.token = '';
     document.body.classList.remove('online', 'guest', 'master'); setNames(null); setActors(); Rnd.unseed(); showHome(); $('lobby').classList.add('hidden'); $('l-status').textContent = '';
   }
-  O.leave = () => { try { if (O.net) O.net.leave(); } catch (e) { /* abaikan */ } reset(); };
-  const myName = () => { const v = $('l-name').value.trim(); try { localStorage.setItem('bb-name', v); } catch (e) { /* abaikan */ } O.name = v; return v; };
-  async function enter(role, fn) {                       // role: 'h' host/P1 · 'g' tamu/P2 · 'm' Room Master (penonton)
-    mk(); $('l-status').textContent = '';
+  O.leave = () => {
     try {
-      const j = await fn(O.net);
-      O.on = true; O.host = role === 'h'; O.guest = role === 'g'; O.master = role === 'm'; O.me = O.host ? 0 : O.guest ? 1 : -1;
-      document.body.classList.add('online'); document.body.classList.toggle('guest', O.guest); document.body.classList.toggle('master', O.master); showRoom(j.code);
-      if (O.host) { mkMaster(0); status(); }
+      if (O.master) { const f = new NetSession({}); f.code = O.code; f.token = O.token; f.farewell(); }       // keluar sebagai Room Master = ruangan ditutup untuk semua
+      else if (O.net) O.net.leave();
+    } catch (e) { /* abaikan */ }
+    reset();
+  };
+  const myName = () => { const v = $('l-name').value.trim(); try { localStorage.setItem('bb-name', v); } catch (e) { /* abaikan */ } O.name = v; return v; };
+  async function enterMaster() {
+    const nm = myName(); $('l-status').textContent = '';
+    const s0 = mkSlot(0);
+    try {
+      const j = await s0.create(nm);
+      O.on = true; O.master = true; O.me = -1; O.code = j.code; O.token = j.token; O.name = j.name;
+      mkSlot(1).attachPeer(j.code, j.token, j.name, '2', 0);
+      document.body.classList.add('online', 'master'); document.body.classList.remove('guest'); setActors(); showRoom(j.code);
+    } catch (e) { O.nets[0] = O.nets[1] = null; toast(e.message || 'Gagal.'); }
+  }
+  async function enterPlayer(code) {
+    const nm = myName(); mkPlayer(); $('l-status').textContent = '';
+    try {
+      const j = await O.net.join(code, nm);
+      O.on = true; O.master = false; O.me = j.role === '2' ? 1 : 0;
+      document.body.classList.add('online'); document.body.classList.remove('master'); document.body.classList.toggle('guest', O.me === 1); setActors(); showRoom(j.code);
     } catch (e) { O.net = null; toast(e.message || 'Gagal.'); }
   }
-  O.openLobby = () => { $('lobby').classList.remove('hidden'); if (!O.on) showHome(); };
+  O.openLobby = () => { $('lobby').classList.remove('hidden'); if (!O.on) showHome(); else status(); };
 
-  $('l-create').onclick = () => { const nm = myName(); enter('h', n => n.create(nm)); };
-  $('l-join').onclick = () => { const nm = myName(), c = $('l-code').value.trim(); if (c.length !== 5) { toast('Kode ruangan harus 5 karakter.'); return; } enter('g', n => n.join(c, nm, false)); };
-  $('l-watch').onclick = () => { const nm = myName(), c = $('l-code').value.trim(); if (c.length !== 5) { toast('Kode ruangan harus 5 karakter.'); return; } enter('m', n => n.join(c, nm, true)); };
-  $('l-start').onclick = () => { if (!O.ready) return; $('lobby').classList.add('hidden'); Game.net.begin(); };
+  $('l-create').onclick = () => enterMaster();
+  $('l-join').onclick = () => { const c = $('l-code').value.trim(); if (c.length !== 5) { toast('Kode ruangan harus 5 karakter.'); return; } enterPlayer(c); };
+  $('l-start').onclick = () => { if (!O.both()) return; $('lobby').classList.add('hidden'); Game.net.begin(); };
   $('l-copy').onclick = () => {
     const u = location.origin + location.pathname + '?kode=' + $('l-codebig').textContent;
     try { navigator.clipboard.writeText(u).then(() => toast('Tautan disalin.'), () => toast(u)); } catch (e) { toast(u); }
@@ -3074,12 +3269,10 @@ const Game = (() => {
   let result = null, resultIndex = 0, resultLock = 0;
 
   function startMatch() {
-    if (Online.master) return;                              // penonton tidak bisa memulai
-    if (Online.guest) { Online.send('r', { t: 'again' }); return; }
-    const seed = Online.host ? Online.newSeed() : 0;        // online: satu seed dari host untuk SEMUA perangkat (gelombang & soal sama)
-    Rnd.seed(seed);
+    if (Online.on && !Online.master) { Online.send('r', { t: 'again' }); return; }   // pemain: minta Room Master memulai ronde baru
+    if (Online.on && !Online.begin()) return;               // Room Master: butuh kedua pemain tersambung
     startMatchLocal();
-    if (Online.host) Online.sendGo(seed);
+    if (Online.on) Online.sendGo();                         // satu dunia di Room Master; pemain ikut lewat pesan 'go'
   }
   function startMatchLocal() {
     setActors();
@@ -3122,8 +3315,8 @@ const Game = (() => {
   }
 
   function resultBtn(i) { return { x: UI_W / 2 - 190, y: 410 + i * 50, w: 380, h: 40 }; }
-  const resultItems = () => Online.master ? ['MENU UTAMA'] : RESULT_ITEMS;       // Room Master tidak punya "MAIN LAGI"
-  function activateResult() { if (Online.master || resultIndex === 1) toMenu(); else startMatch(); }
+  const resultItems = () => RESULT_ITEMS;
+  function activateResult() { if (resultIndex === 1) toMenu(); else startMatch(); }
   function endMatch(r) {
     result = r; state = 'result'; resultIndex = 0; resultLock = CONFIG.RESULT_LOCK; confT = 0;
     SFX.play(r.winner < 0 ? 'draw' : 'win');
@@ -3142,11 +3335,11 @@ const Game = (() => {
     for (const p of players) {
       if (Online.on && p.index !== Online.me) continue;
       const pn = p.panel;
-      if (!pn || pn.phase !== 'ask') continue;
+      if (!pn || pn.pending || pn.phase !== 'ask') continue;
       const r = Gates.panelRect(p);
       for (let i = 0; i < 4; i++) {
         const o = Gates.optionRect(r, i);
-        if (x >= o.x && x <= o.x + o.w && y >= o.y && y <= o.y + o.h) { pn.sel = i; Gates.answer(p, i); return; }
+        if (x >= o.x && x <= o.x + o.w && y >= o.y && y <= o.y + o.h) { pn.sel = i; if (Online.on) Online.answer(p, i); else Gates.answer(p, i); return; }
       }
     }
   }
@@ -3213,7 +3406,7 @@ const Game = (() => {
       if (Input.wasPressed('KeyN')) SFX.toggle();
       if (Input.wasPressed('KeyP') || Input.wasPressed('Escape')) pause();
       else if (Input.wasPressed('KeyR') && !Online.on) startMatch();
-      else if (state === 'playing') { if (Online.master || Online.waiting) { /* penonton / menunggu lawan: tidak ada input */ } else for (const p of ACT) Gates.handleInput(p); }   // gerbang & jawaban, per pemain
+      else if (state === 'playing') { if (!Online.on) { for (const p of ACT) Gates.handleInput(p); } else if (!Online.master) Online.gateInput(players[Online.me]); }   // gerbang & jawaban; Room Master tidak punya input (ia penonton + wasit)
     }
   }
 
@@ -3223,9 +3416,10 @@ const Game = (() => {
   function toMenu() { if (Online.on) Online.leave(); state = 'menu'; Input.clear(); }
 
   /* ----- Update fisika (timestep tetap) ----- */
-  /* Online: tiap perangkat menyimulasikan dunia LENGKAP untuk pemainnya sendiri (ACT) → tidak ada yang menunggu jaringan.
-     Selesai (garis akhir / waktu habis) = kirim hasil ke host lalu menunggu keputusan pemenang (dunia dibekukan). Room Master menjalankan
-     dunia acuan tanpa pemain (seed sama) dan tidak pernah menilai pertandingan sendiri. */
+  /* Online (satu dunia di Room Master):
+       - Room Master menyimulasikan dunia LENGKAP untuk kedua pemain (ACT = players). Gerak pemain tidak dihitung di sini (posisi datang dari pemain,
+         diikuti di Online.frame); yang berjalan di master: tong, boss, api, miring, gerbang/soal, koin, palu, skor, dan penilaian pemenang.
+       - Pemain hanya menyimulasikan karakternya sendiri (instan) + hal visual; dunia digambar dari snapshot master (Online.worldFrame). */
   function step(dt) {
     if (state === 'countdown') {
       countdown -= dt;
@@ -3235,12 +3429,21 @@ const Game = (() => {
       return;
     }
     if (state !== 'playing') return;
-    if (Online.waiting) return;                    // sudah selesai; menunggu keputusan host
     elapsed += dt;
     { const rf = Match.remaining(elapsed), fin = rf > 0 && rf <= 20;     // BABAK AKHIR: 20 detik terakhir
-      if (fin && !Tension.finale) { finaleT = 3; FX.event('roar', 40, 80); }
+      if (fin && !Tension.finale) { finaleT = 3; Online.cur = -2; FX.event('roar', 40, 80); Online.cur = -1; }   // -2 = efek lokal murni (tiap perangkat memicunya sendiri; tidak diteruskan master)
       Tension.finale = fin; }
-    for (const p of ACT) Physics.update(p, dt);
+    if (Online.on && !Online.master) {                    // pemain online: hanya karakter sendiri; dunia = snapshot master
+      Physics.update(players[Online.me], dt);
+      Tilt.update(dt, Boss.S.phase);
+      Score.update(dt);
+      Online.panelTick(dt);
+      for (const k of KEYMAP) Input.consumeLatch(k.jump);
+      { const rm = Math.ceil(Match.remaining(elapsed)); if (rm <= 10 && rm > 0 && rm !== tickLast) { tickLast = rm; SFX.play('tick'); } }
+      return;
+    }
+    if (Online.master) { for (const p of players) Physics.tick(p, dt); }          // gerak pemain dari jaringan; hanya pewaktu efek yang dihitung di sini
+    else for (const p of ACT) Physics.update(p, dt);
     Barrels.update(dt);
     Boss.update(dt);
     Tilt.update(dt, Boss.S.phase);
@@ -3253,18 +3456,8 @@ const Game = (() => {
     // di langkah fisika berikutnya (frame tanpa langkah fisika membiarkannya tetap menunggu)
     for (const k of KEYMAP) Input.consumeLatch(k.jump);
     { const rm = Math.ceil(Match.remaining(elapsed)); if (rm <= 10 && rm > 0 && rm !== tickLast) { tickLast = rm; SFX.play('tick'); } }
-    if (Online.master) return;                            // penonton tidak menilai
     const r = Match.evaluate(elapsed);                    // garis akhir / waktu habis, dinilai sekali per langkah
-    if (r) { if (Online.on) Online.localEnd(r, elapsed); else endMatch(r); }
-  }
-
-  /* Master yang masuk di tengah pertandingan: majukan dunia acuan secepat mungkin (tanpa suara/efek) sampai waktu host. */
-  function fastForward(sec) {
-    countdown = 0; state = 'playing'; goT = 0;
-    const sp = SFX.play, fe = FX.event; SFX.play = () => { }; FX.event = () => { };
-    try { for (let n = Math.floor(sec / CONFIG.STEP); n > 0; n--) step(CONFIG.STEP); }
-    finally { SFX.play = sp; FX.event = fe; }
-    FX.reset(); Input.clear(); acc = 0;
+    if (r) { if (Online.master) Online.finish(r); else endMatch(r); }
   }
 
   /* ----- Render ----- */
@@ -3452,7 +3645,7 @@ const Game = (() => {
       if (!fin) text(REWARD_NAME[g.reward], x, y - 78, 10, '#ffd23f', 'center');
     }
     for (const p of players) {                              // petunjuk interaksi di dekat gerbang
-      if (p.panel) continue;
+      if (p.panel || (Online.on && !Online.master && p.index !== Online.me)) continue;
       const g = Gates.nearGate(p);
       if (!g || g.open[p.index]) continue;
       const hy = Math.max(g.y - 96, 66), hx = g.cx + (p.index === 0 ? -34 : 34);
@@ -3482,7 +3675,7 @@ const Game = (() => {
     textFit(pn.q.text, r.x + r.w / 2, r.y + 54, r.w - 24, 24, '#ffd23f', 'center');
     for (let i = 0; i < 4; i++) {
       const o = Gates.optionRect(r, i);
-      const sel = i === pn.sel && pn.phase === 'ask';
+      const sel = i === pn.sel && (pn.phase === 'ask' || pn.phase === 'wait');
       ctx.fillStyle = sel ? p.accent : '#1c1c3a';
       ctx.fillRect(o.x, o.y, o.w, o.h);
       ctx.strokeStyle = sel ? '#fff' : p.color; ctx.lineWidth = 2;
@@ -3497,7 +3690,7 @@ const Game = (() => {
       text(pn.fb.title, r.x + r.w / 2, r.y + 102, 30, pn.fb.ok ? '#7dff7a' : '#ff6b6b', 'center');
       textFit(pn.fb.detail, r.x + r.w / 2, r.y + 138, r.w - 24, 18, '#fff', 'center');
     } else {
-      const hint = Online.master ? 'ROOM MASTER - MENONTON' : document.body.classList.contains('touch') ? 'KETUK JAWABAN  LOMPAT:BATAL' : p.index === 0 ? 'WASD:PILIH E:OK SPACE:BATAL' : 'PANAH:PILIH ENTER:OK SHIFT:BATAL';
+      const hint = Online.master ? 'ROOM MASTER - ' + p.name + ' MENJAWAB' : document.body.classList.contains('touch') ? 'KETUK JAWABAN  LOMPAT:BATAL' : p.index === 0 ? 'WASD:PILIH E:OK SPACE:BATAL' : 'PANAH:PILIH ENTER:OK SHIFT:BATAL';
       textS(hint, r.x + r.w / 2, r.y + r.h - 12, 2, '#9aa', 'center');
     }
     ctx.restore();
@@ -3685,7 +3878,7 @@ const Game = (() => {
       ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
       text((sel ? '> ' : '  ') + item + (sel ? ' <' : '  '), W / 2, b.y + b.h / 2, 26, sel ? '#7dff7a' : '#ffffff', 'center');
     });
-    textS(resultLock > 0 ? '...' : Online.master ? 'MENUNGGU HOST MEMULAI LAGI...  M:MENU' : 'R:MAIN LAGI  M:MENU  W/S:PILIH  ENTER:OK', W / 2, 522, 2, '#9aa', 'center');
+    textS(resultLock > 0 ? '...' : Online.on && !Online.master ? 'MAIN LAGI = MINTA ROOM MASTER MEMULAI  M:MENU' : 'R:MAIN LAGI  M:MENU  W/S:PILIH  ENTER:OK', W / 2, 522, 2, '#9aa', 'center');
   }
 
   function playerFrameName(p) {
@@ -3717,7 +3910,7 @@ const Game = (() => {
       } else { ctx.fillStyle = p.color; ctx.fillRect(Math.round(p.x) + dx, y, p.w, p.h); }
     };
     if (p.boost > 0 && !p.climbing) { drawAt(-p.facing * 14, blink ? 0.1 : 0.18); drawAt(-p.facing * 7, blink ? 0.15 : 0.3); }
-    const ga = (Online.on && !Online.master && p.index !== Online.me) ? 0.72 : 1;      // bayangan lawan: tembus pandang (tidak menabrak)
+    const ga = (Online.on && !Online.master && p.index !== Online.me) ? 0.85 : 1;      // pemain lain: sedikit tembus pandang (tidak saling menabrak)
     drawAt(0, blink ? 0.35 * ga : ga);
     ctx.globalAlpha = 1;
     if (p.hammer > 0 && !p.climbing && (p.hammer > 2 || Math.floor(t * 10) % 2 === 0)) {   // palu diayun bergantian: di atas kepala / di depan
@@ -3795,7 +3988,7 @@ const Game = (() => {
     textS(`${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`, W / 2, 18, 4, low ? (blink ? '#ffffff' : '#ff4d4d') : '#ffffff', 'center');
     ctx.fillStyle = '#333'; ctx.fillRect(W / 2 - 70, 38, 140, 6);
     ctx.fillStyle = low ? '#ff4d4d' : '#7dff7a'; ctx.fillRect(W / 2 - 70, 38, 140 * Math.max(0, rem / dur), 6);
-    if (Online.master) textS('ROOM MASTER - MENONTON (TONG & BOSS = SEED SAMA DENGAN PEMAIN)', W / 2, 62, 2, '#c28cff', 'center');
+    if (Online.master) textS('ROOM MASTER - DUNIA UTAMA: P1 & P2 BERMAIN DI SINI', W / 2, 62, 2, '#c28cff', 'center');
   }
 
   function drawMenu() {
@@ -3928,10 +4121,6 @@ const Game = (() => {
       textS('GO!', CONFIG.W / 2 + 5, CONFIG.H / 2 + 5, 14, '#14502a', 'center');
       textS('GO!', CONFIG.W / 2, CONFIG.H / 2, 14, '#7dff7a', 'center');
     }
-    if (Online.waiting && state === 'playing') {                          // sudah selesai; menunggu keputusan host
-      textS('MENUNGGU LAWAN...', CONFIG.W / 2 + 4, CONFIG.H / 2 + 4, 7, '#14142b', 'center');
-      textS('MENUNGGU LAWAN...', CONFIG.W / 2, CONFIG.H / 2, 7, '#ffd23f', 'center');
-    }
     if (state === 'paused') { ctx.save(); ctx.translate(UI_OFFX, UI_OFF); drawPause(); ctx.restore(); }
     if (state === 'result') { ctx.save(); ctx.translate(UI_OFFX, UI_OFF); drawResult(); ctx.restore(); drawParticles(); }
   }
@@ -4004,6 +4193,7 @@ const Game = (() => {
 
   /* ----- Bahaya: tong/api yang mendekat di tingkat yang sama memunculkan tanda seru & tepi layar memerah ----- */
   function updateDanger(dt) {
+    if (Online.master) { dangerSm = 0; warn[0] = warn[1] = 0; return; }      // Room Master = penonton: tanpa tepi layar merah / tanda seru
     let top = 0;
     for (const p of ACT) {
       const cx = p.x + p.w / 2, feet = p.y + p.h; let w = 0;
@@ -4060,10 +4250,11 @@ const Game = (() => {
     init,
     net: {
       get: () => ({ st: state, cd: countdown, el: elapsed }),
-      start: (seed, cd, el) => { Rnd.seed(seed); startMatchLocal(); if (cd > 0) countdown = cd; else fastForward(el); },
+      start: cd => { startMatchLocal(); if (cd > 0) countdown = cd; else { countdown = 0; state = 'playing'; goT = 0; } },     // pemain: 'go' dari Room Master
       begin: () => startMatch(),
       end: r => endMatch(r),
-      menu: () => { state = 'menu'; Input.clear(); }
+      menu: () => { state = 'menu'; Input.clear(); },
+      syncClock: el => { if (state !== 'playing') return; const d = el - elapsed; elapsed += Math.abs(d) > 0.3 ? d : d * 0.15; }     // jam ronde pemain ikut jam Room Master
     },
     getState: () => state,
     getResult: () => result,

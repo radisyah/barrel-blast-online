@@ -1,15 +1,17 @@
 'use strict';
-/* NUMBER BOMBER Online — satu Vercel Function untuk PENSINYALAN (bukan untuk gameplay).
+/* BARREL BLAST Online — satu Vercel Function untuk PENSINYALAN (bukan untuk gameplay).
    Gameplay berjalan langsung antar-perangkat lewat WebRTC (tanpa server di tengah → latensi serendah mungkin).
    Server ini hanya dipakai untuk: membuat/gabung ruangan dengan kode 5 karakter, saling bertukar SDP/ICE,
    dan sebagai RELAY cadangan bila koneksi langsung gagal (mis. jaringan seluler dengan NAT ketat dan tanpa TURN).
 
-     GET  /api/room?action=ice                  -> daftar ICE server (STUN/TURN)
-     GET  /api/room?code=&token=&since=N        -> polling kotak surat: {peer, msgs, n}
+     GET  /api/room?action=ice                       -> daftar ICE server (STUN/TURN)
+     GET  /api/room?code=&token=&since=N&peer=1|2    -> polling kotak surat: {peer, msgs, n}  (peer hanya dipakai Room Master)
      POST /api/room {action: create|join|send|leave, ...}
 
-   Peran: h = host (P1) · g = tamu (P2) · m = Room Master (hanya menonton, tersambung ke host).
-   Redis:  room:KODE (host) · guest:KODE / master:KODE (SET NX → hanya satu) · mb:KODE:<dari><ke> (kotak surat per pasangan: hg, gh, hm, mh) */
+   Topologi BINTANG: Room Master (pembuat ruangan, jaringan cepat) menjalankan SATU dunia permainan; Pemain 1 dan Pemain 2
+   masing-masing tersambung ke Room Master (bukan satu sama lain).
+   Peran: h = Room Master (host) · 1 = Pemain 1 (merah) · 2 = Pemain 2 (biru). Pemain yang masuk lebih dulu mendapat kursi 1.
+   Redis:  room:KODE (host) · p1:KODE / p2:KODE (SET NX → hanya satu pemain per kursi) · mb:KODE:<dari><ke> (kotak surat per pasangan: h1, 1h, h2, 2h) */
 const crypto = require('crypto');
 const { getStore } = require('../lib/store.js');
 
@@ -30,7 +32,7 @@ const cleanName = (s, fb) => {
 };
 const normCode = c => { c = String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); if (c.length !== 5) throw fail(400, 'Kode ruangan harus 5 karakter.'); return c; };
 const parse = s => { try { return s ? JSON.parse(s) : null; } catch (e) { return null; } };
-const K = { room: c => 'room:' + c, guest: c => 'guest:' + c, master: c => 'master:' + c, mb: (c, link) => 'mb:' + c + ':' + link };
+const K = { room: c => 'room:' + c, slot: (c, n) => 'p' + n + ':' + c, mb: (c, link) => 'mb:' + c + ':' + link };
 
 /* ICE server, urutan prioritas:
    1) Metered: env METERED_APP_NAME + METERED_API_KEY (+ METERED_REGION opsional) → kredensial diambil dari REST API Metered di SERVER
@@ -61,22 +63,22 @@ async function iceServers() {
   return DEFAULT_ICE;
 }
 
-/* Identifikasi pemanggil → 'h' (host) / 'g' (tamu). Mengembalikan {role, room, guest}. */
+/* Identifikasi pemanggil → 'h' (Room Master) / '1' / '2' (pemain). Mengembalikan {role, room, slots:[p1,p2]}. */
 async function auth(code, token) {
-  const r = await getStore().pipeline([['GET', K.room(code)], ['GET', K.guest(code)], ['GET', K.master(code)]]);
+  const r = await getStore().pipeline([['GET', K.room(code)], ['GET', K.slot(code, 1)], ['GET', K.slot(code, 2)]]);
   const room = parse(r[0]);
   if (!room) throw fail(404, 'Ruangan tidak ditemukan atau sudah kedaluwarsa.', { gone: true });
-  const guest = parse(r[1]), master = parse(r[2]);
+  const slots = [parse(r[1]), parse(r[2])];
   let role = null;
   if (token && room.host.token === token) role = 'h';
-  else if (token && guest && guest.token === token) role = 'g';
-  else if (token && master && master.token === token) role = 'm';
+  else if (token && slots[0] && slots[0].token === token) role = '1';
+  else if (token && slots[1] && slots[1].token === token) role = '2';
   if (!role) throw fail(401, 'Sesi tidak valid. Gabung ulang ke ruangan.', { gone: true });
-  return { role, room, guest, master };
+  return { role, room, slots };
 }
 
 async function actCreate(b) {
-  const store = getStore(), name = cleanName(b.name, 'Pemain 1'), token = rid(12);
+  const store = getStore(), name = cleanName(b.name, 'Room Master'), token = rid(12);
   for (let i = 0; i < 12; i++) {
     let code = ''; for (let k = 0; k < 5; k++) code += ALPHABET[crypto.randomInt(ALPHABET.length)];
     const room = { code, host: { token, name }, createdAt: Date.now() };
@@ -87,26 +89,32 @@ async function actCreate(b) {
 }
 
 async function actJoin(b) {
-  const code = normCode(b.code), store = getStore(), asMaster = b.as === 'master', slot = asMaster ? K.master(code) : K.guest(code);
-  const r = await store.pipeline([['GET', K.room(code)], ['GET', slot]]);
+  const code = normCode(b.code), store = getStore();
+  const r = await store.pipeline([['GET', K.room(code)], ['GET', K.slot(code, 1)], ['GET', K.slot(code, 2)]]);
   const room = parse(r[0]);
   if (!room) throw fail(404, 'Ruangan tidak ditemukan atau sudah kedaluwarsa.');
-  const cur = parse(r[1]), role = asMaster ? 'm' : 'g';
-  if (b.token && cur && cur.token === b.token) return { code, token: cur.token, role, name: cur.name, hostName: room.host.name };   // sambung ulang
-  const name = cleanName(b.name, asMaster ? 'Room Master' : 'Pemain 2'), token = rid(12);
-  const ok = await store.cmd(['SET', slot, JSON.stringify({ token, name }), 'NX', 'EX', TTL]);
-  if (ok !== 'OK') throw fail(409, asMaster ? 'Room Master sudah ada di ruangan ini.' : 'Ruangan sudah penuh (2 pemain).');
-  const base = await store.cmd(['LLEN', K.mb(code, asMaster ? 'hm' : 'hg')]);     // pesan lama (sesi sebelumnya) dilewati klien baru lewat 'base'
-  return { code, token, role, name, hostName: room.host.name, base: base || 0 };
+  const cur = [parse(r[1]), parse(r[2])];
+  for (let i = 0; i < 2; i++) {                                                             // sambung ulang dengan token lama
+    if (b.token && cur[i] && cur[i].token === b.token) return { code, token: cur[i].token, role: String(i + 1), name: cur[i].name, hostName: room.host.name, base: await store.cmd(['LLEN', K.mb(code, 'h' + (i + 1))]) || 0 };
+  }
+  for (let i = 0; i < 2; i++) {                                                             // kursi kosong pertama: Pemain 1 lalu Pemain 2
+    if (cur[i]) continue;
+    const name = cleanName(b.name, 'Pemain ' + (i + 1)), token = rid(12);
+    const ok = await store.cmd(['SET', K.slot(code, i + 1), JSON.stringify({ token, name }), 'NX', 'EX', TTL]);
+    if (ok !== 'OK') continue;                                                              // keduluan pemain lain: coba kursi berikutnya
+    const base = await store.cmd(['LLEN', K.mb(code, 'h' + (i + 1))]);                      // pesan lama (sesi sebelumnya) dilewati klien baru lewat 'base'
+    return { code, token, role: String(i + 1), name, hostName: room.host.name, base: base || 0 };
+  }
+  throw fail(409, 'Ruangan sudah penuh (2 pemain).');
 }
 
 async function actState(q) {
   const code = normCode(q.code), token = String(q.token || '');
-  const { role, room, guest, master } = await auth(code, token);
+  const { role, room, slots } = await auth(code, token);
   const since = Math.max(0, Math.floor(Number(q.since) || 0));
-  const peerRole = role === 'h' ? (q.peer === 'm' ? 'm' : 'g') : 'h';        // host punya dua pasangan; yang lain hanya host
+  const peerRole = role === 'h' ? (q.peer === '2' ? '2' : '1') : 'h';                    // Room Master punya dua pasangan; pemain hanya Room Master
   const msgs = await getStore().cmd(['LRANGE', K.mb(code, peerRole + role), since, -1]);
-  const who = peerRole === 'g' ? guest : (peerRole === 'm' ? master : room.host);
+  const who = peerRole === 'h' ? room.host : slots[Number(peerRole) - 1];
   const peer = { joined: !!who, name: who ? (who.name || '') : '' };
   return { peer, msgs: (msgs || []).map(parse).filter(Boolean), n: since + (msgs || []).length };
 }
@@ -115,7 +123,7 @@ async function actSend(b) {
   const code = normCode(b.code), { role } = await auth(code, String(b.token || ''));
   const list = Array.isArray(b.msgs) ? b.msgs.slice(0, MAX_BATCH) : [];
   if (!list.length) return {};
-  const to = role === 'h' ? (b.to === 'm' ? 'm' : 'g') : 'h', key = K.mb(code, role + to), store = getStore();
+  const to = role === 'h' ? (b.to === '2' ? '2' : '1') : 'h', key = K.mb(code, role + to), store = getStore();
   const strs = [];
   for (const m of list) {
     const s = typeof m === 'string' ? m : JSON.stringify(m);
@@ -131,11 +139,12 @@ async function actLeave(b) {
   const code = normCode(b.code), store = getStore();
   let a; try { a = await auth(code, String(b.token || '')); } catch (e) { return {}; }
   const bye = JSON.stringify({ t: 'bye' }), cmds = [];
-  if (a.role === 'h') {                                  // host pergi = ruangan ditutup untuk semua
-    cmds.push(['RPUSH', K.mb(code, 'hg'), bye], ['EXPIRE', K.mb(code, 'hg'), 600], ['RPUSH', K.mb(code, 'hm'), bye], ['EXPIRE', K.mb(code, 'hm'), 600],
-              ['DEL', K.room(code), K.guest(code), K.master(code)]);
-  } else if (a.role === 'g') cmds.push(['RPUSH', K.mb(code, 'gh'), bye], ['EXPIRE', K.mb(code, 'gh'), 600], ['DEL', K.guest(code)]);       // kursi kosong lagi
-  else cmds.push(['RPUSH', K.mb(code, 'mh'), bye], ['EXPIRE', K.mb(code, 'mh'), 600], ['DEL', K.master(code)]);                              // kursi Room Master kosong lagi
+  if (a.role === 'h') {                                  // Room Master pergi = ruangan ditutup untuk semua
+    for (const l of ['h1', 'h2']) cmds.push(['RPUSH', K.mb(code, l), bye], ['EXPIRE', K.mb(code, l), 600]);
+    cmds.push(['DEL', K.room(code), K.slot(code, 1), K.slot(code, 2)]);
+  } else {                                               // pemain pergi = kursinya kosong lagi; Room Master diberi tahu
+    cmds.push(['RPUSH', K.mb(code, a.role + 'h'), bye], ['EXPIRE', K.mb(code, a.role + 'h'), 600], ['DEL', K.slot(code, a.role)]);
+  }
   await store.pipeline(cmds);
   return {};
 }
