@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node dev-server.js",
     "test": "node test/api.test.js",
-    "test:e2e": "python3 test/e2e.py"
+    "test:e2e": "python3 test/e2e.py",
+    "test:e2e:master": "python3 test/e2e_master.py"
   },
   "engines": {
     "node": ">=20"

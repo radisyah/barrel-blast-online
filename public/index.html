@@ -109,7 +109,11 @@
   .lcard button { width: 100%; margin: 5px 0; padding: 11px; font: bold 15px "Courier New", monospace; color: #000; background: #7dff7a;
     border: 0; border-radius: 6px; touch-action: manipulation; }
   .lcard button.alt { background: #ffd23f; } .lcard button.dim { background: #333; color: #aaa; }
+  .lcard button.master { background: #c28cff; }
   .lcard button:disabled { opacity: .4; }
+  #l-mstatus { margin: 2px 0 8px; font-size: 12px; color: #9aa; } #l-mstatus.ok { color: #c28cff; }
+  /* Room Master hanya menonton: tidak ada kontrol sentuh */
+  body.master #pad { display: none !important; }
   .lcard .or { margin: 8px 0 2px; color: #9aa; font-size: 12px; }
   #l-codebig { font-size: 40px; letter-spacing: 8px; color: #7dff7a; margin: 6px 0; }
   #l-status { min-height: 36px; margin: 8px 0; color: #ffd23f; } #l-status.ok { color: #7dff7a; } #l-status.bad { color: #ff6b6b; }
@@ -156,12 +160,14 @@
     <button id="l-create">BUAT RUANGAN</button>
     <div class="or">&mdash; ATAU GABUNG &mdash;</div>
     <input id="l-code" maxlength="5" placeholder="KODE 5 HURUF" autocomplete="off">
-    <button id="l-join" class="alt">GABUNG</button>
+    <button id="l-join" class="alt">GABUNG SEBAGAI PEMAIN 2</button>
+    <button id="l-watch" class="master">GABUNG SEBAGAI ROOM MASTER (NONTON)</button>
   </div>
   <div id="l-room" class="hidden">
     <div>KODE RUANGAN</div><div id="l-codebig">-----</div>
     <button id="l-copy" class="alt">SALIN TAUTAN UNDANGAN</button>
     <div id="l-status"></div>
+    <div id="l-mstatus" class="hidden"></div>
     <button id="l-start" disabled>MULAI PERTANDINGAN</button>
   </div>
   <button id="l-back" class="dim">KEMBALI</button>
@@ -2685,14 +2691,16 @@ class NetSession {
   }
 
   /* ---------- keluar ---------- */
+  farewell() {       // beri tahu server (dan lewat server: lawan) bahwa kita pergi → kursi dibebaskan / ruangan ditutup bila host
+    if (!this.code || !this.token) return;
+    try {
+      const body = JSON.stringify({ action: 'leave', code: this.code, token: this.token });
+      if (navigator.sendBeacon && navigator.sendBeacon(this.url, new Blob([body], { type: 'application/json' }))) { /* terkirim */ }
+      else fetch(this.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body, keepalive: true }).catch(() => { });
+    } catch (e) { /* abaikan */ }
+  }
   leave() {          // keluar dengan sengaja: beri tahu lawan & bebaskan kursi
-    if (this.code && this.token && !this.closed) {
-      try {
-        const body = JSON.stringify({ action: 'leave', code: this.code, token: this.token });
-        if (navigator.sendBeacon && navigator.sendBeacon(this.url, new Blob([body], { type: 'application/json' }))) { /* terkirim */ }
-        else fetch(this.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body, keepalive: true }).catch(() => { });
-      } catch (e) { /* abaikan */ }
-    }
+    if (!this.closed) this.farewell();
     this.teardown();
   }
   close(reason) {    // putus karena sebab luar
@@ -2728,9 +2736,13 @@ const Online = (() => {
     }
     return r;
   };
-  const O = { on: false, host: false, guest: false, me: 0, ready: false, gen: 0, ended: false, net: null, name: '',
+  /* ROOM MASTER = penonton ruangan (kursi ketiga, tidak ikut bermain). Ia tersambung HANYA ke host lewat NetSession kedua
+     (host: O.mnet). Host menyiarkan ke master: 'go'/'end'/'pq' (andal), snapshot dunia yang sama dengan tamu, posisi P1 (miliknya)
+     dan posisi P2 (diteruskan dari tamu), serta efek/suara P2 yang tamu mainkan sendiri (O.mevq). Master tidak mengirim input apa pun. */
+  const O = { on: false, host: false, guest: false, master: false, me: 0, ready: false, gen: 0, ended: false, net: null, name: '',
     held: new Set(), remote: new Set(), evq: [], depth: 0, last: 0,
-    muteF: 0, seq: 0, selT: 0, accP: 0, accS: 0 };
+    muteF: 0, seq: 0, selT: 0, accP: 0, accS: 0,
+    mnet: null, mReady: false, mFull: false, mevq: [] };
   /* Model sinkronisasi (meniru Number Bomber): GERAK pemain dihitung di perangkat pemain itu sendiri → respons tombol instan,
      tanpa menunggu bolak-balik ke host. Posisi dikirim 30×/dtk (tak andal) dan lawan digambar dengan interpolasi + ekstrapolasi.
      Dunia bersama (tong, api, boss, gerbang/soal, skor, tabrakan) tetap diputuskan HOST, disiarkan sebagai snapshot + kejadian 'hit'. */
@@ -2738,17 +2750,21 @@ const Online = (() => {
   const newRem = () => ({ has: false, n: 0, x: 0, y: 0, vx: 0, vy: 0, g: 0, c: 0, f: 1, cp: 0, at: 0 });
   O.rm = newRem();            // host: keadaan terakhir P2 dari tamu
   O.r0 = newRem();            // tamu: keadaan terakhir P1 dari host
+  O.mr = [newRem(), newRem()];   // master: keadaan terakhir P1 & P2 dari host
   const MOVE_KEYS = ['x', 'y', 'vx', 'vy', 'onGround', 'facing', 'coyote', 'jumpBuf', 'climbing', 'ladderCd', 'climbPhase'];   // dikirim lewat paket posisi, bukan snapshot
   const live = () => { const s = Game.getState(); return s === 'playing' || s === 'countdown'; };
   const clean = (s, d) => String(s || '').toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim().slice(0, 8) || d;
   const setNames = n => { players[0].name = clean(n && n[0], 'P1'); players[1].name = clean(n && n[1], 'P2'); };
 
   O.send = (ch, obj) => !!(O.net && O.ready && O.net.send(ch, obj));
+  O.msend = (ch, obj) => !!(O.mnet && O.mReady && O.mnet.send(ch, obj));      // host → Room Master
+  O.bcast = (ch, obj) => { const a = O.send(ch, obj); O.msend(ch, obj); return a; };   // host → tamu + master
 
   /* Rute tombol: host memetakan panah/Enter ke tombol P1; tamu meneruskan tombol sebagai input P2 ke host. */
   O.route = (c, d) => {
     if (!O.on) return c;
     if (O.host) return (live() && HMAP[c]) || c;
+    if (O.master) return c;                                   // penonton: tombol tidak pernah dikirim ke host
     const m = GMAP[c]; if (!m) return c;
     if (d) {
       if (!live()) return c;
@@ -2766,8 +2782,18 @@ const Online = (() => {
 
   /* Efek & suara dari host diteruskan ke tamu (tanpa dobel: SFX di dalam FX.event tidak ikut dikirim). */
   const fe = FX.event, sp = SFX.play;
-  FX.event = function () { O.depth++; try { fe.apply(FX, arguments); } finally { O.depth--; } if (O.host && O.ready && !O.muteF) O.evq.push(['f'].concat([].slice.call(arguments))); };
-  SFX.play = function (n) { sp.apply(SFX, arguments); if (O.host && O.ready && !O.depth && !O.muteF) O.evq.push(['s', n]); };
+  const qm = e => { if (O.mevq.length < 120) O.mevq.push(e); };     // efek yang dimainkan tamu sendiri (dibisukan di jalur tamu) tetap perlu sampai ke master
+  FX.event = function () {
+    O.depth++; try { fe.apply(FX, arguments); } finally { O.depth--; }
+    if (!O.host) return;
+    const e = ['f'].concat([].slice.call(arguments));
+    if (O.ready && !O.muteF) O.evq.push(e); else if (O.mReady && O.muteF) qm(e);
+  };
+  SFX.play = function (n) {
+    sp.apply(SFX, arguments);
+    if (!O.host || O.depth) return;
+    if (O.ready && !O.muteF) O.evq.push(['s', n]); else if (O.mReady && O.muteF) qm(['s', n]);
+  };
 
   /* Host memutuskan tabrakan; untuk P2 (dikendalikan tamu) hasilnya dikirim sebagai kejadian andal 'hit'
      dan tamu menerapkan lentingan itu pada simulasi lokalnya. Efek 'hit' dibisukan di jalur siaran agar tidak dobel. */
@@ -2785,18 +2811,18 @@ const Online = (() => {
   const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, +v || 0));
   O.pkt = () => {
     const p = players[O.me];
-    return { t: 'p', n: ++O.seq, x: R1(p.x), y: R1(p.y), vx: Math.round(p.vx), vy: Math.round(p.vy), g: p.onGround ? 1 : 0,
+    return { t: 'p', i: O.me, n: ++O.seq, x: R1(p.x), y: R1(p.y), vx: Math.round(p.vx), vy: Math.round(p.vy), g: p.onGround ? 1 : 0,
       c: p.climbing && p.ladder ? Level.ladders.indexOf(p.ladder) + 1 : 0, f: p.facing < 0 ? -1 : 1, cp: Math.round(p.climbPhase) };
   };
-  O.recvPkt = m => {
-    const r = O.host ? O.rm : O.r0, p = players[O.host ? 1 : 0];
-    if (typeof m.n !== 'number' || m.n <= r.n || !isFinite(m.x) || !isFinite(m.y)) return;     // basi / tak berurutan / tak valid
+  O.recvPkt = (m, r, p) => {                                  // r = keadaan jarak jauh yang diperbarui, p = pemain yang digerakkan; true bila diterima
+    if (typeof m.n !== 'number' || m.n <= r.n || !isFinite(m.x) || !isFinite(m.y)) return false;     // basi / tak berurutan / tak valid
     const c = m.c | 0;
     r.n = m.n; r.at = performance.now();
     r.x = clampN(m.x, 0, CONFIG.W - p.w); r.y = clampN(m.y, -40, CONFIG.H + 80);
     r.vx = clampN(m.vx, -900, 900); r.vy = clampN(m.vy, -1500, 1500);
     r.g = m.g ? 1 : 0; r.c = c > 0 && c <= Level.ladders.length ? c : 0; r.f = m.f < 0 ? -1 : 1; r.cp = clampN(m.cp, 0, 1e6);
     if (!r.has) { r.has = true; p.x = r.x; p.y = r.y; }
+    return true;
   };
   /* Gambar/ikuti pemain lawan: ekstrapolasi singkat dari kecepatan terakhir + penghalusan (menutup jeda paket tanpa tersendat). */
   O.follow = (p, r, dt, rate) => {
@@ -2876,7 +2902,7 @@ const Online = (() => {
         const f = prim(pn); f.gi = Level.gates.indexOf(pn.gate); f.fb = pn.fb;
         if (pn.phase === 'ask') {
           const qk = pn.q.text + '|' + pn.q.options.join(',');
-          if (qk !== O.qk[i]) { O.qk[i] = qk; O.qs[i]++; O.send('r', { t: 'pq', g: O.gen, i: i, qs: O.qs[i], q: { text: pn.q.text, options: pn.q.options, tier: pn.q.tier } }); }
+          if (qk !== O.qk[i]) { O.qk[i] = qk; O.qs[i]++; O.bcast('r', { t: 'pq', g: O.gen, i: i, qs: O.qs[i], q: { text: pn.q.text, options: pn.q.options, tier: pn.q.tier } }); }
         } else f.q = pn.q;                                  // fase umpan balik: sertakan kunci jawaban (kecil, jarang)
         f.qs = O.qs[i];
         const pf = {};
@@ -2962,30 +2988,54 @@ const Online = (() => {
   O.frame = (now, dt) => {
     const st = Game.getState();
     $('ping').classList.toggle('hidden', !(O.on && st !== 'menu'));
-    if (O.ready && live()) {
+    if (O.ready && live() && !O.master) {
       O.accP += dt;                                       // akumulator (bukan "now - last >= N"): laju kirim tidak terkuantisasi ke frame
-      if (O.accP >= 1 / PKT_HZ) { O.accP = Math.min(O.accP - 1 / PKT_HZ, 1 / PKT_HZ); O.net.send('u', O.pkt()); }
+      if (O.accP >= 1 / PKT_HZ) { O.accP = Math.min(O.accP - 1 / PKT_HZ, 1 / PKT_HZ); const pk = O.pkt(); O.net.send('u', pk); if (O.host) O.msend('u', pk); }
       if (O.host) {
         O.accS += dt;
-        if (O.accS >= 1 / SNAP_HZ) { O.accS = Math.min(O.accS - 1 / SNAP_HZ, 1 / SNAP_HZ); O.net.send('u', O.snap()); }
+        if (O.accS >= 1 / SNAP_HZ) {
+          O.accS = Math.min(O.accS - 1 / SNAP_HZ, 1 / SNAP_HZ);
+          const s = O.snap(O.mFull); O.mFull = false;
+          O.net.send('u', s);
+          if (O.mReady) O.mnet.send('u', O.mevq.length ? Object.assign({}, s, { ev: (s.ev || []).concat(O.mevq.splice(0)) }) : s);
+        }
       }
     }
     if (O.host) return;
     const k = 1 - Math.exp(-dt * 24), nowMs = performance.now();
-    O.follow(players[0], O.r0, dt, 30);
+    if (O.master) { O.follow(players[0], O.mr[0], dt, 30); O.follow(players[1], O.mr[1], dt, 30); }
+    else O.follow(players[0], O.r0, dt, 30);
     Barrels.pool.forEach(b => { ease(b, k, nowMs); if (b.active) b.angle += (b.onLadder ? 6 : (b.vx || 0) / CONFIG.BARREL_R) * dt; });   // putaran dihitung lokal
     Flames.pool.forEach(f => { ease(f, k, nowMs); if (f.active && f.life > 0) f.life -= dt; });
   };
-  O.sendEnd = r => { O.ended = true; O.send('r', { t: 'end', g: O.gen, r: r, s: O.snap(true) }); };
+  O.sendEnd = r => { O.ended = true; O.mevq.length = 0; O.bcast('r', { t: 'end', g: O.gen, r: r, s: O.snap(true) }); };
+  O.goMsg = () => ({ t: 'go', g: O.gen, s: { difficulty: settings.difficulty, duration: settings.duration, qtime: settings.qtime }, n: [players[0].name, players[1].name] });
   O.sendGo = () => {
-    O.gen++; O.ended = false; O.relRemote(); O.evq.length = 0; O.rm.has = false; O.resetSnap();
+    O.gen++; O.ended = false; O.relRemote(); O.evq.length = 0; O.mevq.length = 0; O.rm.has = false; O.resetSnap();
     setNames([O.name, O.net && O.net.peerName]);
-    O.send('r', { t: 'go', g: O.gen, s: { difficulty: settings.difficulty, duration: settings.duration, qtime: settings.qtime }, n: [players[0].name, players[1].name] });
+    O.bcast('r', O.goMsg());
+  };
+  /* Host: Room Master baru tersambung (bisa di tengah pertandingan) → kirim keadaan terkini supaya ia langsung bisa menonton. */
+  O.syncMaster = () => {
+    O.mevq.length = 0; O.mFull = true;
+    const st = Game.getState();
+    if (!(O.gen > 0 && (st === 'countdown' || st === 'playing' || st === 'result'))) return;
+    O.msend('r', O.goMsg());
+    for (let i = 0; i < 2; i++) {
+      const pn = players[i].panel;
+      if (pn && pn.phase === 'ask') O.msend('r', { t: 'pq', g: O.gen, i: i, qs: O.qs[i], q: { text: pn.q.text, options: pn.q.options, tier: pn.q.tier } });
+    }
+    if (st === 'result') O.msend('r', { t: 'end', g: O.gen, r: Game.getResult(), s: O.snap(true) });
   };
 
   /* ----- Pesan masuk ----- */
   function onMsg(m) {
-    if (m.t === 'p') { O.recvPkt(m); return; }
+    if (m.t === 'p') {
+      if (O.host) { if (O.recvPkt(m, O.rm, players[1]) && O.mReady) O.mnet.send('u', Object.assign({}, m, { i: 1 })); }     // P2 juga diteruskan ke master
+      else if (O.master) { const i = m.i === 1 ? 1 : 0; O.recvPkt(m, O.mr[i], players[i]); }
+      else O.recvPkt(m, O.r0, players[0]);
+      return;
+    }
     if (O.host) {
       if (m.t === 'k' && P2.indexOf(m.c) >= 0) {
         if (m.d && !live()) return;
@@ -2997,11 +3047,11 @@ const Online = (() => {
       } else if (m.t === 'again' && Game.getState() === 'result') Game.net.begin();
     } else {
       if (m.t === 'go') {
-        O.gen = m.g; O.ended = false; O.r0.has = false; O.resetSnap(); Object.assign(settings, m.s); setNames(m.n);
+        O.gen = m.g; O.ended = false; O.r0.has = false; O.mr[0].has = O.mr[1].has = false; O.resetSnap(); Object.assign(settings, m.s); setNames(m.n);
         $('lobby').classList.add('hidden'); Game.net.start();
       } else if (m.t === 's') O.apply(m);
       else if (m.t === 'pq') { if (m.g === O.gen && (m.i === 0 || m.i === 1)) { O.pq[m.i] = m; if (O.hold[m.i]) O.showPanel(m.i, -1); } }
-      else if (m.t === 'hit') { if (live() && !O.ended) { const p = players[O.me]; p.invuln = 0; Physics.hitPlayer(p, { x: +m.x || 0 }); } }
+      else if (m.t === 'hit') { if (!O.master && live() && !O.ended) { const p = players[O.me]; p.invuln = 0; Physics.hitPlayer(p, { x: +m.x || 0 }); } }
       else if (m.t === 'end' && m.g === O.gen && !O.ended) { O.apply(m.s); O.ended = true; Game.net.end(m.r); }
     }
   }
@@ -3021,8 +3071,45 @@ const Online = (() => {
       else if (!O.ready) msg = (n.peerName || 'Teman') + ' masuk - menyambungkan...';
       else { msg = 'Terhubung dengan ' + (n.peerName || 'teman') + ' (' + (n.mode === 'p2p' ? 'langsung' : 'relay') + '). Kamu MERAH.'; cls = 'ok'; }
       $('l-start').disabled = !O.ready;
-    } else { msg = O.ready ? 'Terhubung. Kamu BIRU - menunggu host memulai...' : 'Menyambungkan ke host...'; cls = O.ready ? 'ok' : ''; }
+    } else if (O.master) { msg = O.ready ? 'Terhubung sebagai ROOM MASTER. Kamu menonton P1 (merah) vs P2 (biru) - menunggu host memulai...' : 'Menyambungkan ke host...'; cls = O.ready ? 'ok' : ''; }
+    else { msg = O.ready ? 'Terhubung. Kamu BIRU - menunggu host memulai...' : 'Menyambungkan ke host...'; cls = O.ready ? 'ok' : ''; }
     $('l-status').textContent = msg; $('l-status').className = cls;
+    mstatus();
+  }
+  function mstatus() {                                   // baris status Room Master di lobi host
+    const el = $('l-mstatus'), m = O.mnet;
+    if (!O.host || !m) { el.className = 'hidden'; return; }
+    const nm = (m.peerName || 'MASTER').toUpperCase();
+    if (O.mReady) { el.textContent = 'ROOM MASTER: ' + nm + ' (MENONTON)'; el.className = 'ok'; }
+    else if (m.peerJoined) { el.textContent = 'ROOM MASTER: ' + nm + ' - MENYAMBUNGKAN...'; el.className = ''; }
+    else { el.textContent = 'ROOM MASTER: BELUM ADA (OPSIONAL)'; el.className = ''; }
+  }
+
+  /* Host: sesi kedua khusus Room Master (kursi terpisah dari pemain; memakai token host yang sama). Bila master keluar,
+     sesi dibuat ulang dengan penunjuk 'since' yang diteruskan supaya pesan lama (mis. 'bye') tidak terbaca lagi. */
+  function mkMaster(since) {
+    if (!O.on || !O.host || !O.net || !O.net.code) return;
+    const mm = new NetSession({
+      onPeer: (joined, name) => {
+        if (O.mnet !== mm) return;
+        if (joined) toast('Room Master ' + (name || '') + ' bergabung.');
+        else { toast('Room Master keluar.'); if (!O.mReady && mm.rtcStarted) { rebuildMaster(mm); return; } }
+        status();
+      },
+      onReady: () => { if (O.mnet !== mm) return; O.mReady = true; O.syncMaster(); status(); },
+      onStatus: () => { },
+      onMessage: () => { },
+      onClose: () => { if (O.mnet === mm) rebuildMaster(mm); }
+    });
+    O.mnet = mm; O.mReady = false;
+    mm.attachMaster(O.net.code, O.net.token, O.name, since);
+  }
+  function rebuildMaster(old) {
+    const since = old.since;
+    O.mReady = false; O.mevq.length = 0; O.mnet = null;
+    try { old.teardown(); } catch (e) { /* abaikan */ }
+    if (O.on && O.host) setTimeout(() => mkMaster(since), 50);
+    status();
   }
   function ping(mode, rtt) {
     const b = $('ping'); const nt = O.net, drop = nt && nt.dropped ? ' · BUF ' + nt.dropped : '';
@@ -3036,28 +3123,32 @@ const Online = (() => {
       onReady: () => { O.ready = true; status(); },
       onStatus: (mode, rtt) => { ping(mode, rtt); status(); },
       onMessage: onMsg,
-      onClose: reason => { reset(); Game.net.menu(); toast(reason || 'Koneksi terputus.'); }
+      onClose: reason => { if (O.host && O.net) O.net.farewell(); reset(); Game.net.menu(); toast(reason || 'Koneksi terputus.'); }
     });
   }
   function reset() {
-    O.relRemote(); O.on = O.host = O.guest = O.ready = O.ended = false; O.net = null; O.held.clear(); O.evq.length = 0;
-    O.rm = newRem(); O.r0 = newRem(); O.seq = 0; O.muteF = 0; O.accP = O.accS = 0;
-    document.body.classList.remove('online', 'guest'); setNames(null); showHome(); $('lobby').classList.add('hidden'); $('l-status').textContent = '';
+    O.relRemote(); O.on = O.host = O.guest = O.master = O.ready = O.ended = false; O.net = null; O.held.clear(); O.evq.length = 0;
+    if (O.mnet) { try { O.mnet.teardown(); } catch (e) { /* abaikan */ } }
+    O.mnet = null; O.mReady = false; O.mFull = false; O.mevq.length = 0;
+    O.rm = newRem(); O.r0 = newRem(); O.mr = [newRem(), newRem()]; O.seq = 0; O.muteF = 0; O.accP = O.accS = 0;
+    document.body.classList.remove('online', 'guest', 'master'); setNames(null); showHome(); $('lobby').classList.add('hidden'); $('l-status').textContent = '';
   }
   O.leave = () => { try { if (O.net) O.net.leave(); } catch (e) { /* abaikan */ } reset(); };
   const myName = () => { const v = $('l-name').value.trim(); try { localStorage.setItem('bb-name', v); } catch (e) { /* abaikan */ } O.name = v; return v; };
-  async function enter(host, fn) {
+  async function enter(role, fn) {                       // role: 'h' host/P1 · 'g' tamu/P2 · 'm' Room Master (penonton)
     mk(); $('l-status').textContent = '';
     try {
       const j = await fn(O.net);
-      O.on = true; O.host = host; O.guest = !host; O.me = host ? 0 : 1;
-      document.body.classList.add('online'); document.body.classList.toggle('guest', !host); showRoom(j.code);
+      O.on = true; O.host = role === 'h'; O.guest = role === 'g'; O.master = role === 'm'; O.me = O.host ? 0 : O.guest ? 1 : -1;
+      document.body.classList.add('online'); document.body.classList.toggle('guest', O.guest); document.body.classList.toggle('master', O.master); showRoom(j.code);
+      if (O.host) { mkMaster(0); status(); }
     } catch (e) { O.net = null; toast(e.message || 'Gagal.'); }
   }
   O.openLobby = () => { $('lobby').classList.remove('hidden'); if (!O.on) showHome(); };
 
-  $('l-create').onclick = () => { const nm = myName(); enter(true, n => n.create(nm)); };
-  $('l-join').onclick = () => { const nm = myName(), c = $('l-code').value.trim(); if (c.length !== 5) { toast('Kode ruangan harus 5 karakter.'); return; } enter(false, n => n.join(c, nm, false)); };
+  $('l-create').onclick = () => { const nm = myName(); enter('h', n => n.create(nm)); };
+  $('l-join').onclick = () => { const nm = myName(), c = $('l-code').value.trim(); if (c.length !== 5) { toast('Kode ruangan harus 5 karakter.'); return; } enter('g', n => n.join(c, nm, false)); };
+  $('l-watch').onclick = () => { const nm = myName(), c = $('l-code').value.trim(); if (c.length !== 5) { toast('Kode ruangan harus 5 karakter.'); return; } enter('m', n => n.join(c, nm, true)); };
   $('l-start').onclick = () => { if (!O.ready) return; $('lobby').classList.add('hidden'); Game.net.begin(); };
   $('l-copy').onclick = () => {
     const u = location.origin + location.pathname + '?kode=' + $('l-codebig').textContent;
@@ -3094,6 +3185,7 @@ const Game = (() => {
   let result = null, resultIndex = 0, resultLock = 0;
 
   function startMatch() {
+    if (Online.master) return;                              // penonton tidak bisa memulai
     if (Online.guest) { Online.send('r', { t: 'again' }); return; }
     startMatchLocal();
     if (Online.host) Online.sendGo();
@@ -3138,7 +3230,8 @@ const Game = (() => {
   }
 
   function resultBtn(i) { return { x: UI_W / 2 - 190, y: 410 + i * 50, w: 380, h: 40 }; }
-  function activateResult() { if (resultIndex === 0) startMatch(); else toMenu(); }
+  const resultItems = () => Online.master ? ['MENU UTAMA'] : RESULT_ITEMS;       // Room Master tidak punya "MAIN LAGI"
+  function activateResult() { if (Online.master || resultIndex === 1) toMenu(); else startMatch(); }
   function endMatch(r) {
     result = r; state = 'result'; resultIndex = 0; resultLock = CONFIG.RESULT_LOCK; confT = 0;
     SFX.play(r.winner < 0 ? 'draw' : 'win');
@@ -3146,7 +3239,7 @@ const Game = (() => {
   }
   function tapResult(x, y) {
     if (resultLock > 0) return;
-    for (let i = 0; i < RESULT_ITEMS.length; i++) {
+    for (let i = 0; i < resultItems().length; i++) {
       const b = resultBtn(i);
       if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { resultIndex = i; activateResult(); return; }
     }
@@ -3219,8 +3312,8 @@ const Game = (() => {
       else if (ok) activatePause();
     } else if (state === 'result') {
       if (resultLock > 0) return;                         // abaikan tombol yang masih ditekan saat pertandingan berakhir
-      if (up) resultIndex = cycle(RESULT_ITEMS, resultIndex, -1);
-      if (dn) resultIndex = cycle(RESULT_ITEMS, resultIndex, 1);
+      if (up) resultIndex = cycle(resultItems(), resultIndex, -1);
+      if (dn) resultIndex = cycle(resultItems(), resultIndex, 1);
       if (Input.wasPressed('KeyR')) startMatch();
       else if (Input.wasPressed('KeyM')) toMenu();
       else if (ok) activateResult();
@@ -3228,7 +3321,7 @@ const Game = (() => {
       if (Input.wasPressed('KeyN')) SFX.toggle();
       if (Input.wasPressed('KeyP') || Input.wasPressed('Escape')) pause();
       else if (Input.wasPressed('KeyR') && !Online.on) startMatch();
-      else if (state === 'playing') { if (Online.guest) Online.guestPanelInput(); else for (const p of players) Gates.handleInput(p); }   // gerbang & jawaban, per pemain
+      else if (state === 'playing') { if (Online.master) { /* penonton: tidak ada input */ } else if (Online.guest) Online.guestPanelInput(); else for (const p of players) Gates.handleInput(p); }   // gerbang & jawaban, per pemain
     }
   }
 
@@ -3246,6 +3339,7 @@ const Game = (() => {
     for (const k of KEYMAP) Input.consumeLatch(k.jump);
   }
   function step(dt) {
+    if (Online.master) return;                     // Room Master tidak menyimulasikan apa pun: semuanya dari host (snapshot + posisi kedua pemain)
     if (Online.guest) { stepGuest(dt); return; }   // tamu hanya menyimulasikan GERAK pemainnya sendiri; dunia = snapshot host
     if (state === 'countdown') {
       countdown -= dt;
@@ -3685,7 +3779,7 @@ const Game = (() => {
         if (row[1]) text(row[1], x + w - 20, yy, 18, p.accent, 'right');
       });
     }
-    RESULT_ITEMS.forEach((item, i) => {
+    resultItems().forEach((item, i) => {
       const b = resultBtn(i), sel = i === resultIndex;
       ctx.fillStyle = sel ? '#1c3a1c' : '#14142b';
       ctx.fillRect(b.x, b.y, b.w, b.h);
@@ -3693,7 +3787,7 @@ const Game = (() => {
       ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
       text((sel ? '> ' : '  ') + item + (sel ? ' <' : '  '), W / 2, b.y + b.h / 2, 26, sel ? '#7dff7a' : '#ffffff', 'center');
     });
-    textS(resultLock > 0 ? '...' : 'R:MAIN LAGI  M:MENU  W/S:PILIH  ENTER:OK', W / 2, 522, 2, '#9aa', 'center');
+    textS(resultLock > 0 ? '...' : Online.master ? 'MENUNGGU HOST MEMULAI LAGI...  M:MENU' : 'R:MAIN LAGI  M:MENU  W/S:PILIH  ENTER:OK', W / 2, 522, 2, '#9aa', 'center');
   }
 
   function playerFrameName(p) {
@@ -3801,6 +3895,7 @@ const Game = (() => {
     textS(`${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`, W / 2, 18, 4, low ? (blink ? '#ffffff' : '#ff4d4d') : '#ffffff', 'center');
     ctx.fillStyle = '#333'; ctx.fillRect(W / 2 - 70, 38, 140, 6);
     ctx.fillStyle = low ? '#ff4d4d' : '#7dff7a'; ctx.fillRect(W / 2 - 70, 38, 140 * Math.max(0, rem / dur), 6);
+    if (Online.master) textS('ROOM MASTER - MENONTON', W / 2, 62, 2, '#c28cff', 'center');
   }
 
   function drawMenu() {
@@ -3948,7 +4043,7 @@ const Game = (() => {
         ctx.globalAlpha = 0.35; ctx.strokeStyle = p.color; ctx.lineWidth = 2;
         ctx.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
         const mine = !Online.on || p.index === Online.me, touch = document.body.classList.contains('touch');
-        textS(p.name + (Online.on ? (mine ? ' SOAL SAYA' : ' SOAL LAWAN') : ' SOAL'), r.x + r.w / 2, r.y + r.h / 2 - 12, 4, p.color, 'center');
+        textS(p.name + (Online.on && !Online.master ? (mine ? ' SOAL SAYA' : ' SOAL LAWAN') : ' SOAL'), r.x + r.w / 2, r.y + r.h / 2 - 12, 4, p.color, 'center');
         if (mine) textS(touch ? 'KETUK TOMBOL SOAL DI GERBANG' : (p.index === 0 ? 'TEKAN E DI GERBANG' : 'TEKAN ENTER DI GERBANG'), r.x + r.w / 2, r.y + r.h / 2 + 22, 2, '#9aa', 'center');
         ctx.globalAlpha = 1;
       }

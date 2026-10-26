@@ -2,6 +2,7 @@
 
 Versi online dari *BARREL BLAST* (Donkey Kong + soal matematika), 1 vs 1 dengan **kode ruangan**.
 Satu perangkat = satu pemain. Host = P1 (merah), tamu = P2 (biru). Mode lokal 2 pemain satu perangkat tetap ada.
+Ruangan juga punya satu kursi **Room Master**: penonton yang melihat P1 dan P2 bermain secara langsung (tanpa ikut bermain / mengontrol).
 
 ## Cara kerja (latensi rendah)
 Model sinkronisasinya sama dengan *Number Bomber Online*: **gerak dihitung di perangkat pemain sendiri**, dunia bersama diputuskan host.
@@ -13,6 +14,15 @@ Model sinkronisasinya sama dengan *Number Bomber Online*: **gerak dihitung di pe
   host tetap yang memutuskan benar/salah. Jam & hitung mundur dikoreksi dengan setengah ping.
 - Koneksi **langsung antar-perangkat** (WebRTC DataChannel, kanal `u` tak andal untuk posisi/snapshot, kanal `r` andal untuk kejadian). Server Vercel + Upstash Redis
   hanya untuk membuat/gabung ruangan, bertukar SDP/ICE, dan **relay cadangan** bila koneksi langsung gagal. Badge di bawah layar: `LANGSUNG · xx MS` atau `RELAY`.
+
+## Room Master (penonton)
+- **Hanya satu** master per ruangan (kursi terpisah dari P2; master kedua ditolak 409). Master tersambung **hanya ke host** (WebRTC kedua, relay cadangan sama seperti tamu);
+  tamu tidak tahu ada master dan latensi P1↔P2 tidak berubah.
+- Host menyiarkan ke master: kejadian andal `go` / `end` / `pq` (soal), **snapshot dunia yang sama** dengan tamu, posisi P1 (milik host) dan posisi P2 (diteruskan dari tamu),
+  plus efek/suara P2 yang dimainkan tamu sendiri. Master menyimulasikan **tidak ada apa pun**: hanya menggambar dengan interpolasi yang sama seperti tamu.
+- Master yang masuk di tengah pertandingan langsung menerima `go` + snapshot penuh + soal yang sedang terbuka, jadi langsung bisa menonton.
+- Master tidak mengirim input: tombol/joystick dimatikan, tidak ada "Main Lagi" (host yang memulai ronde baru; master ikut otomatis).
+- Host keluar atau koneksi host–tamu putus = ruangan ditutup, master kembali ke menu.
 
 ## Sinkronisasi dunia: snapshot kecil (<2 KB penuh, biasanya 200–900 B)
 Snapshot host → tamu dibuat kecil agar tidak terfragmentasi di jaringan seluler dan tidak membuat antrean kirim yang menaikkan ping:
@@ -28,7 +38,9 @@ Terukur (loopback, 2 browser): bandwidth host→tamu 41–69 KB/s → 8–12 KB/
 ## Main online
 1. Menu → **MAIN ONLINE** → **Buat Ruangan** (atur KESULITAN / DURASI / WAKTU SOAL di menu dulu; host yang menentukan).
 2. Kirim kode atau **Salin Tautan Undangan** (`?kode=XXXXX`) ke teman → ia memilih **Gabung**.
-3. Setelah status "Terhubung", host menekan **Mulai Pertandingan**. Di layar hasil: **Main Lagi** (tamu meminta, host memulai) / **Menu Utama**.
+3. *(Opsional)* Orang ketiga memasukkan kode yang sama lalu menekan **Gabung sebagai Room Master (Nonton)**. Lobi host menampilkan nama master.
+   Master boleh masuk kapan saja, termasuk di tengah pertandingan, dan boleh keluar/diganti tanpa mengganggu pemain.
+4. Setelah status "Terhubung", host menekan **Mulai Pertandingan**. Di layar hasil: **Main Lagi** (tamu meminta, host memulai) / **Menu Utama**.
 
 ## Deploy ke Vercel
 1. Taruh folder ini di GitHub → **Add New → Project** di Vercel (preset "Other", tanpa build command).
@@ -39,6 +51,7 @@ Terukur (loopback, 2 browser): bandwidth host→tamu 41–69 KB/s → 8–12 KB/
 ```bash
 node dev-server.js     # http://localhost:3000 (penyimpanan memori)
 npm test               # tes API pensinyalan
+python3 test/e2e_master.py   # 3-4 browser: host + tamu + Room Master (nonton P1/P2, soal, tabrakan, masuk/keluar di tengah main, hasil)
 python3 test/e2e.py    # 2 browser sungguhan lewat WebRTC dengan ping buatan (default 60 ms/arah ≈ 120 ms);
                        # args: [folder] [delay_ms] [persen_paket_hilang]  (pip install playwright && playwright install chromium)
 ```
