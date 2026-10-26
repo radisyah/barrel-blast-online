@@ -14,6 +14,12 @@ Model sinkronisasinya sama dengan *Number Bomber Online*: **gerak dihitung di pe
 - Koneksi **langsung antar-perangkat** (WebRTC DataChannel, kanal `u` tak andal untuk posisi/snapshot, kanal `r` andal untuk kejadian). Server Vercel + Upstash Redis
   hanya untuk membuat/gabung ruangan, bertukar SDP/ICE, dan **relay cadangan** bila koneksi langsung gagal. Badge di bawah layar: `LANGSUNG · xx MS` atau `RELAY`.
 
+## Sinkronisasi dunia: snapshot kecil (<2 KB penuh, biasanya 200–900 B)
+Snapshot host → tamu dibuat kecil agar tidak terfragmentasi di jaringan seluler dan tidak membuat antrean kirim yang menaikkan ping:
+pemain dikirim sebagai **delta** (hanya field yang berubah; snapshot penuh tiap ±1 dtk), tong/api sebagai larik angka bulat (hanya yang aktif),
+gerbang/collectible/palu/skor hanya saat berubah, dan teks soal + pilihan jawaban sekali lewat kanal andal (`pq`). Laju snapshot 15×/dtk.
+Terukur (loopback, 2 browser): bandwidth host→tamu 41–69 KB/s → 8–12 KB/s.
+
 ## Kontrol
 - **HP (landscape, online)**: joystick di **kiri**; **LOMPAT** dan **SOAL** di **kanan** (SOAL = buka gerbang soal / jawab). Ketuk pilihan jawaban di panel soal juga bisa.
 - **PC online**: WASD atau panah · Spasi/Shift = lompat · E/Enter = soal/jawab.

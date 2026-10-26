@@ -2636,7 +2636,7 @@ class NetSession {
       const c = ch === 'u' ? this.chU : this.chR;
       /* Backpressure: bila antrean kirim kanal tak-andal menumpuk (uplink/TURN lambat), JANGAN menambah antrean — data posisi/snapshot
          yang menunggu sudah basi. Tanpa ini antrean membengkak dan semua pesan tiba berdetik-detik terlambat (bufferbloat). Ping tetap dikirim. */
-      if (ch === 'u' && c && c.bufferedAmount > 8192 && obj.t !== 'pi' && obj.t !== 'po') { this.dropped = (this.dropped || 0) + 1; return true; }
+      if (ch === 'u' && c && c.bufferedAmount > 4096 && obj.t !== 'pi' && obj.t !== 'po') { this.dropped = (this.dropped || 0) + 1; return true; }
       if (c && c.readyState === 'open') { try { c.send(s); return true; } catch (e) { /* jatuh ke relay */ } }
     }
     if (this.relay) {
@@ -2726,7 +2726,7 @@ const Online = (() => {
   /* Model sinkronisasi (meniru Number Bomber): GERAK pemain dihitung di perangkat pemain itu sendiri → respons tombol instan,
      tanpa menunggu bolak-balik ke host. Posisi dikirim 30×/dtk (tak andal) dan lawan digambar dengan interpolasi + ekstrapolasi.
      Dunia bersama (tong, api, boss, gerbang/soal, skor, tabrakan) tetap diputuskan HOST, disiarkan sebagai snapshot + kejadian 'hit'. */
-  const PKT_HZ = 30, SNAP_HZ = 20;
+  const PKT_HZ = 30, SNAP_HZ = 15;
   const newRem = () => ({ has: false, n: 0, x: 0, y: 0, vx: 0, vy: 0, g: 0, c: 0, f: 1, cp: 0, at: 0 });
   O.rm = newRem();            // host: keadaan terakhir P2 dari tamu
   O.r0 = newRem();            // tamu: keadaan terakhir P1 dari host
@@ -2828,55 +2828,127 @@ const Online = (() => {
     if (ch) O.selT = performance.now();
   };
 
-  /* ----- Snapshot dunia (host -> tamu) ----- */
-  O.snap = () => {
+  /* ----- Snapshot dunia (host -> tamu) -----
+     Dirancang KECIL (<1 KB, jauh di bawah ukuran 1 paket jaringan ±1200 B) agar tidak terfragmentasi/hilang di jaringan seluler
+     dan tidak membuat antrean kirim yang menaikkan ping:
+       • pemain: hanya FIELD YANG BERUBAH sejak snapshot terakhir (delta); snapshot penuh tiap ±1 dtk sebagai penyelamat bila ada paket hilang;
+       • tong/api: hanya yang aktif, larik angka bulat (tamu menghitung putaran sendiri);
+       • gerbang/collectible/palu/skor: hanya dikirim saat berubah;
+       • teks soal + pilihan jawaban: sekali lewat kanal andal ('pq'), bukan di tiap snapshot. */
+  O.sent = {}; O.snapN = 0; O.qs = [0, 0]; O.qk = ['', ''];
+  O.pq = [null, null]; O.hold = [null, null];        // tamu: soal terakhir dari host per pemain {qs, q}; hold = keadaan panel gabungan
+  const chg = (k, v, full) => { const s = JSON.stringify(v); if (!full && O.sent[k] === s) return false; O.sent[k] = s; return true; };
+  O.resetSnap = () => { O.sent = {}; O.snapN = 0; O.qk = ['', '']; O.pq = [null, null]; O.hold = [null, null]; };
+  /* Tamu: panel baru ditampilkan bila lengkap; soal fase 'ask' hanya dari kanal andal 'pq' dengan nomor (qs) yang cocok. */
+  O.showPanel = (i, keepSel) => {
+    const np = O.hold[i], p = players[i], pq = O.pq[i];
+    if (!np || np.phase === undefined || np.gi === undefined || np.qs === undefined || !np.gate) { p.panel = null; return; }
+    if (np.phase === 'ask') { if (pq && pq.qs === np.qs) np.q = pq.q; else { p.panel = null; return; } }
+    if (!np.q) { p.panel = null; return; }
+    p.panel = np;
+    if (keepSel >= 0 && np.phase === 'ask') np.sel = keepSel;     // pilihan yang baru ditekan jangan ditimpa snapshot lama
+  };
+  O.snap = full => {
     const G = Game.net.get();
-    const s = { t: 's', g: O.gen, st: G.st, cd: Math.round(G.cd * 100) / 100, el: Math.round(G.el * 100) / 100, fin: Tension.finale ? 1 : 0,
-      bs: prim(Boss.S), ts: prim(Tilt.S),
-      P: players.map(p => {
-        const o = prim(p); for (const f of MOVE_KEYS) delete o[f]; o.pts = prim(p.pts); const pn = p.panel;
-        o.pn = pn ? Object.assign(prim(pn), { gi: Level.gates.indexOf(pn.gate), fb: pn.fb,
-          q: pn.phase === 'ask' ? { text: pn.q.text, options: pn.q.options, tier: pn.q.tier } : pn.q }) : null;
-        return o;
-      }),
-      B: Barrels.pool.map(b => b.active ? prim(b) : 0),
-      F: Flames.pool.map(f => f.active ? Object.assign(prim(f), { cl: f.climb ? 1 : 0 }) : 0),
-      G: Level.gates.map(g => g.alias ? 0 : [g.open[0] ? 1 : 0, g.open[1] ? 1 : 0, Math.round(g.cool[0] * 10) / 10, Math.round(g.cool[1] * 10) / 10]),
-      C: Level.collectibles.map(c => c.active ? 1 : 0), H: Level.hammers.map(c => c.active ? 1 : 0),
-      S: Score.pool.map(q => q.active ? [Math.round(q.x), Math.round(q.y), q.text, q.color, Math.round(q.life * 100) / 100] : 0) };
+    if (++O.snapN % 15 === 0) full = true;
+    const s = { t: 's', g: O.gen, st: G.st, cd: Math.round(G.cd * 100) / 100, el: Math.round(G.el * 100) / 100, fin: Tension.finale ? 1 : 0 };
+    const bs = prim(Boss.S), ts = prim(Tilt.S);
+    if (chg('bs', bs, full)) s.bs = bs;
+    s.ts = ts;                                              // sudut miring berubah tiap frame; kecil saja
+    s.P = players.map((p, i) => {
+      const o = prim(p), out = {};
+      for (const f of MOVE_KEYS) delete o[f];
+      for (const k in o) if (chg('P' + i + k, o[k], full)) out[k] = o[k];
+      const pt = prim(p.pts), po = {};
+      for (const k in pt) if (chg('P' + i + 'pts' + k, pt[k], full)) po[k] = pt[k];
+      for (const _ in po) { out.pts = po; break; }
+      const pn = p.panel, had = chg('P' + i + 'pnx', pn ? 1 : 0, full);       // panel baru muncul/hilang → kirim lengkap
+      if (!pn) { O.qk[i] = ''; if (had) out.pn = null; }
+      else {
+        const f = prim(pn); f.gi = Level.gates.indexOf(pn.gate); f.fb = pn.fb;
+        if (pn.phase === 'ask') {
+          const qk = pn.q.text + '|' + pn.q.options.join(',');
+          if (qk !== O.qk[i]) { O.qk[i] = qk; O.qs[i]++; O.send('r', { t: 'pq', g: O.gen, i: i, qs: O.qs[i], q: { text: pn.q.text, options: pn.q.options, tier: pn.q.tier } }); }
+        } else f.q = pn.q;                                  // fase umpan balik: sertakan kunci jawaban (kecil, jarang)
+        f.qs = O.qs[i];
+        const pf = {};
+        for (const k in f) {
+          if (had) { O.sent['P' + i + 'pn' + k] = JSON.stringify(f[k]); pf[k] = f[k]; }
+          else if (chg('P' + i + 'pn' + k, f[k], full)) pf[k] = f[k];
+        }
+        for (const _ in pf) { out.pn = pf; break; }
+      }
+      return out;
+    });
+    const B = [], F = [];
+    Barrels.pool.forEach((b, i) => {
+      if (!b.active) return;
+      const L = b.onLadder ? 1 : 0, kd = b.kind === 'fast' ? 1 : b.kind === 'ladder' ? 2 : 0;
+      B.push([i, Math.round(b.x), Math.round(b.y), Math.round(b.vx), L ? 130 : Math.round(b.vy), (b.grounded ? 1 : 0) | (b.dir > 0 ? 2 : 0) | (kd << 2) | (L << 4)]);
+    });
+    Flames.pool.forEach((f, i) => { if (f.active) F.push([i, Math.round(f.x), Math.round(f.y), f.dir > 0 ? 1 : 0, f.climb ? (f.climb.dir < 0 ? 1 : 2) : 0, Math.round(f.life)]); });
+    s.B = B; s.F = F;
+    const rd = v => Math.round(v * 10) / 10;
+    const Gt = Level.gates.map(g => g.alias ? 0 : [g.open[0] ? 1 : 0, g.open[1] ? 1 : 0, rd(g.cool[0]), rd(g.cool[1])]);
+    const C = Level.collectibles.map(c => c.active ? 1 : 0), H = Level.hammers.map(c => c.active ? 1 : 0);
+    const S = Score.pool.map(q => q.active ? [Math.round(q.x), Math.round(q.y), q.text, q.color, Math.round(q.life * 10) / 10] : 0);
+    if (chg('G', Gt, full)) s.G = Gt;
+    if (chg('C', C, full)) s.C = C;
+    if (chg('H', H, full)) s.H = H;
+    if (chg('S', S, full)) s.S = S;
     if (O.evq.length) s.ev = O.evq.splice(0);
     return s;
   };
   const setEnt = (e, o) => {
     const was = e.active !== false, ox = e.x, oy = e.y, near = was && Math.abs(o.x - ox) < 90 && Math.abs(o.y - oy) < 90;
-    Object.assign(e, o); e.tx = o.x; e.ty = o.y; e.tt = performance.now();
+    Object.assign(e, o); e.active = true; e.tx = o.x; e.ty = o.y; e.tt = performance.now();
     if (near) { e.x = ox; e.y = oy; }
   };
   O.apply = s => {
     if (s.g !== O.gen || O.ended || Game.getState() === 'menu') return;
     const owd = O.owd();                                  // snapshot sudah berumur ±setengah ping: koreksi supaya jam & hitung mundur tidak tertinggal
     Game.net.set(s.st, s.st === 'countdown' ? Math.max(0, s.cd - owd) : s.cd, s.st === 'playing' ? s.el + owd : s.el, s.fin);
-    Object.assign(Boss.S, s.bs); Object.assign(Tilt.S, s.ts);
+    if (s.bs) Object.assign(Boss.S, s.bs);
+    Object.assign(Tilt.S, s.ts);
     s.P.forEach((o, i) => {
       const p = players[i], pn = o.pn, pts = o.pts; delete o.pn; delete o.pts;
       const mine = i === O.me, keepSel = mine && p.panel && performance.now() - O.selT < 400 ? p.panel.sel : -1;
-      if (mine) { delete o.hitTimer; delete o.throwT; delete o.chain; o.invuln = Math.max(p.invuln || 0, o.invuln || 0); }   // dikelola simulasi lokal
-      Object.assign(p, o); Object.assign(p.pts, pts);
-      p.panel = pn ? Object.assign(pn, { gate: Level.gates[pn.gi] }) : null;
-      if (keepSel >= 0 && p.panel && p.panel.phase === 'ask') p.panel.sel = keepSel;     // pilihan yang baru ditekan jangan ditimpa snapshot lama
+      if (mine) { delete o.hitTimer; delete o.throwT; delete o.chain; if (o.invuln !== undefined) o.invuln = Math.max(p.invuln || 0, o.invuln); }   // dikelola simulasi lokal
+      Object.assign(p, o); if (pts) Object.assign(p.pts, pts);
+      if (pn === null) { O.hold[i] = null; p.panel = null; }
+      else if (pn) {
+        const np = Object.assign(O.hold[i] || {}, pn); O.hold[i] = np;
+        if (np.gi !== undefined) np.gate = Level.gates[np.gi];
+        O.showPanel(i, keepSel);
+      }
     });
-    Barrels.pool.forEach((b, i) => { const o = s.B[i]; if (o) { setEnt(b, o); b.onLadder = null; } else b.active = false; });
-    Flames.pool.forEach((f, i) => { const o = s.F[i]; if (o) { const cl = o.cl; delete o.cl; setEnt(f, o); f.climb = cl ? { L: null, dir: 0 } : null; } else { f.active = false; f.climb = null; } });
-    Level.gates.forEach((g, i) => { const a = s.G[i]; if (a) { g.open[0] = !!a[0]; g.open[1] = !!a[1]; g.cool[0] = a[2]; g.cool[1] = a[3]; } });
-    Level.collectibles.forEach((c, i) => { c.active = !!s.C[i]; });
-    Level.hammers.forEach((c, i) => { c.active = !!s.H[i]; });
-    Score.pool.forEach((q, i) => { const a = s.S[i]; if (a) { q.active = true; q.x = a[0]; q.y = a[1]; q.text = a[2]; q.color = a[3]; q.life = a[4]; } else q.active = false; });
+    Barrels.pool.forEach(b => { b.seen = false; });
+    for (const a of s.B) {
+      const b = Barrels.pool[a[0]]; if (!b) continue;
+      const fl = a[5]; b.seen = true;
+      setEnt(b, { x: a[1], y: a[2], vx: a[3], vy: a[4], grounded: !!(fl & 1), dir: fl & 2 ? 1 : -1, kind: ['normal', 'fast', 'ladder'][(fl >> 2) & 3] || 'normal' });
+      b.onLadder = (fl & 16) ? {} : null;
+    }
+    Barrels.pool.forEach(b => { if (!b.seen) b.active = false; });
+    Flames.pool.forEach(f => { f.seen = false; });
+    for (const a of s.F) {
+      const f = Flames.pool[a[0]]; if (!f) continue;
+      f.seen = true;
+      const dir = a[3] ? 1 : -1, cl = a[4];
+      setEnt(f, { x: a[1], y: a[2], dir: dir, life: a[5], vx: cl ? 0 : dir * (FLAME_SPEED[settings.difficulty] || 0), vy: cl === 1 ? -34 : cl === 2 ? 34 : 0 });
+      f.climb = cl ? { L: null, dir: cl === 1 ? -1 : 1 } : null;
+    }
+    Flames.pool.forEach(f => { if (!f.seen) { f.active = false; f.climb = null; } });
+    if (s.G) Level.gates.forEach((g, i) => { const a = s.G[i]; if (a) { g.open[0] = !!a[0]; g.open[1] = !!a[1]; g.cool[0] = a[2]; g.cool[1] = a[3]; } });
+    if (s.C) Level.collectibles.forEach((c, i) => { c.active = !!s.C[i]; });
+    if (s.H) Level.hammers.forEach((c, i) => { c.active = !!s.H[i]; });
+    if (s.S) Score.pool.forEach((q, i) => { const a = s.S[i]; if (a) { q.active = true; q.x = a[0]; q.y = a[1]; q.text = a[2]; q.color = a[3]; q.life = a[4]; } else q.active = false; });
     if (s.ev) for (const e of s.ev) { if (e[0] === 'f') FX.event.apply(FX, e.slice(1)); else SFX.play(e[1]); }
   };
   const ease = (e, k, nowMs) => {
     if (e.tx === undefined || e.active === false) return;
     const age = Math.min(0.12, (nowMs - (e.tt || nowMs)) / 1000);               // dead-reckoning: lanjutkan gerak sejak snapshot terakhir
-    const tx = e.tx + (e.vx || 0) * age, ty = e.ty + (e.grounded || e.onLadder ? 0 : (e.vy || 0) * age);
+    const tx = e.tx + (e.vx || 0) * age, ty = e.ty + (e.grounded && !e.onLadder ? 0 : (e.vy || 0) * age);
     e.x += (tx - e.x) * k; e.y += (ty - e.y) * k;
   };
   O.frame = (now, dt) => {
@@ -2893,11 +2965,12 @@ const Online = (() => {
     if (O.host) return;
     const k = 1 - Math.exp(-dt * 24), nowMs = performance.now();
     O.follow(players[0], O.r0, dt, 30);
-    Barrels.pool.forEach(b => ease(b, k, nowMs)); Flames.pool.forEach(f => ease(f, k, nowMs));
+    Barrels.pool.forEach(b => { ease(b, k, nowMs); if (b.active) b.angle += (b.onLadder ? 6 : (b.vx || 0) / CONFIG.BARREL_R) * dt; });   // putaran dihitung lokal
+    Flames.pool.forEach(f => { ease(f, k, nowMs); if (f.active && f.life > 0) f.life -= dt; });
   };
-  O.sendEnd = r => { O.ended = true; O.send('r', { t: 'end', g: O.gen, r: r, s: O.snap() }); };
+  O.sendEnd = r => { O.ended = true; O.send('r', { t: 'end', g: O.gen, r: r, s: O.snap(true) }); };
   O.sendGo = () => {
-    O.gen++; O.ended = false; O.relRemote(); O.evq.length = 0; O.rm.has = false;
+    O.gen++; O.ended = false; O.relRemote(); O.evq.length = 0; O.rm.has = false; O.resetSnap();
     setNames([O.name, O.net && O.net.peerName]);
     O.send('r', { t: 'go', g: O.gen, s: { difficulty: settings.difficulty, duration: settings.duration, qtime: settings.qtime }, n: [players[0].name, players[1].name] });
   };
@@ -2916,9 +2989,10 @@ const Online = (() => {
       } else if (m.t === 'again' && Game.getState() === 'result') Game.net.begin();
     } else {
       if (m.t === 'go') {
-        O.gen = m.g; O.ended = false; O.r0.has = false; Object.assign(settings, m.s); setNames(m.n);
+        O.gen = m.g; O.ended = false; O.r0.has = false; O.resetSnap(); Object.assign(settings, m.s); setNames(m.n);
         $('lobby').classList.add('hidden'); Game.net.start();
       } else if (m.t === 's') O.apply(m);
+      else if (m.t === 'pq') { if (m.g === O.gen && (m.i === 0 || m.i === 1)) { O.pq[m.i] = m; if (O.hold[m.i]) O.showPanel(m.i, -1); } }
       else if (m.t === 'hit') { if (live() && !O.ended) { const p = players[O.me]; p.invuln = 0; Physics.hitPlayer(p, { x: +m.x || 0 }); } }
       else if (m.t === 'end' && m.g === O.gen && !O.ended) { O.apply(m.s); O.ended = true; Game.net.end(m.r); }
     }
