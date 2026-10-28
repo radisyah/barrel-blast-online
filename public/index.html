@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0b0b1a">
 <link rel="manifest" href="manifest.webmanifest">
-<title>BARREL BLAST — Retro Math Rivalry</title>
+<title>SAVELOST — Retro Math Rivalry</title>
 <style>
   :root { --pad-h: clamp(128px, 34vh, 210px); }
   html, body { margin: 0; height: 100%; background: #0b0b1a; overflow: hidden; overscroll-behavior: none; }
@@ -172,7 +172,7 @@
 <script>
 'use strict';
 /* =====================================================================
-   BARREL BLAST — Tahap 1: Fondasi, Canvas, Menu, Gerakan Dua Pemain
+   SAVELOST — Tahap 1: Fondasi, Canvas, Menu, Gerakan Dua Pemain
                   Tahap 2: Platform bertingkat, Tangga, Collision, Tong, Terkena Rintangan
                   Tahap 3: Soal matematika, Gerbang, Reward, Konsekuensi ringan
                   Tahap 4: Skor, Collectible, Timer, HUD, Garis akhir, Menang/Seri, Layar hasil
@@ -3998,8 +3998,8 @@ const Game = (() => {
     const W = UI_W;
     ctx.fillStyle = 'rgba(8,8,24,0.55)'; ctx.fillRect(-UI_OFFX, -UI_OFF, CONFIG.W, CONFIG.H);
     const bob = Math.round(Math.sin(t * 3) * 3);
-    textS('BARREL BLAST', W / 2 + 4, 74 + 4 + bob, 8, '#7a2a00', 'center');
-    textS('BARREL BLAST', W / 2, 74 + bob, 8, '#ffd23f', 'center');
+    textS('SAVELOST', W / 2 + 4, 74 + 4 + bob, 8, '#7a2a00', 'center');
+    textS('SAVELOST', W / 2, 74 + bob, 8, '#ffd23f', 'center');
     textS('RETRO MATH RIVALRY', W / 2, 128, 3, '#ff8a3d', 'center');
     const S = Sprites;
     if (S.player) {
